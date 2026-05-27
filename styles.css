@@ -113,6 +113,57 @@ input {
   width: 100%;
 }
 
+.search-box {
+  position: relative;
+}
+
+.suggestions {
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  display: none;
+  left: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+}
+
+.suggestions.is-open {
+  display: block;
+}
+
+.suggestion-option {
+  background: #fff;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  cursor: pointer;
+  display: block;
+  font-weight: 650;
+  min-height: 34px;
+  overflow: hidden;
+  padding: 8px 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.suggestion-option:hover,
+.suggestion-option:focus {
+  background: var(--accent-soft);
+  outline: 0;
+}
+
+.suggestion-empty {
+  color: var(--muted);
+  padding: 9px 10px;
+}
+
 select:focus,
 input:focus,
 button:focus-visible {

@@ -2,7 +2,7 @@ const APP_NAME = "silvan-tiles";
 
 const REPORTS = {
   items: "Item_Report",
-  openings: "OPENING_STOCK",
+  openings: "ALL_OPENING_STOCK",
   warehouses: "Warehouse_Report",
   purchase: "API_PURCHASE_RECEIVE",
   sales: "API_SALES_INVOICES",
@@ -46,7 +46,8 @@ const MOVEMENT_FIELDS = [
 ];
 
 const els = {
-  itemSelect: document.querySelector("#itemSelect"),
+  itemSearch: document.querySelector("#itemSearch"),
+  itemSuggestions: document.querySelector("#itemSuggestions"),
   warehouseSelect: document.querySelector("#warehouseSelect"),
   fromDate: document.querySelector("#fromDate"),
   toDate: document.querySelector("#toDate"),
@@ -72,6 +73,7 @@ const state = {
   itemCount: 0,
   warehouseCount: 0,
   mastersLoaded: false,
+  selectedItem: null,
 };
 
 function withTimeout(promise, timeoutMs, message) {
@@ -115,6 +117,14 @@ function displayValue(value) {
     );
   }
   return String(value);
+}
+
+function recordIdValue(value) {
+  if (value == null) return "";
+  if (typeof value === "object") {
+    return String(value.ID || value.id || value.value || value.record_id || "").trim();
+  }
+  return "";
 }
 
 function getField(record, candidates) {
@@ -286,15 +296,59 @@ function itemKeyFromRecord(record) {
   );
 }
 
+function itemCodeFromRecord(record) {
+  return cleanKey(getText(record, ["ITEMCODE", "ITEM CODE", "Item Code", "Item_Code", "Code"]));
+}
+
+function itemNameFromRecord(record, candidates = []) {
+  return cleanKey(
+    getText(record, [
+      ...candidates,
+      "ITEM NAME",
+      "Item Name",
+      "Item",
+      "ITEM",
+      "Product",
+      "Product Name",
+    ]),
+  );
+}
+
+function itemIdFromRecord(record, candidates = []) {
+  const value = getField(record, [
+    ...candidates,
+    "ITEM NAME",
+    "Item Name",
+    "Item",
+    "ITEM",
+    "Product",
+    "Product Name",
+  ]);
+  return cleanKey(recordIdValue(value));
+}
+
 function warehouseKeyFromRecord(record, candidates = ["WAREHOUSE", "Warehouse", "Warehouse ID"]) {
   return cleanKey(getText(record, candidates));
 }
 
 function matchesItem(record, filters, candidates) {
-  const selected = cleanKey(filters.itemKey || filters.itemCode || filters.itemName);
-  if (!selected) return true;
-  const value = cleanKey(candidates.map((candidate) => getText(record, [candidate])).filter(Boolean).join("|"));
-  return value.includes(selected) || selected.includes(value) || itemKeyFromRecord(record).includes(selected);
+  const selectedId = cleanKey(filters.itemId);
+  const selectedCode = cleanKey(filters.itemCode);
+  const selectedName = cleanKey(filters.itemRawName || filters.itemName);
+  const selectedKey = cleanKey(filters.itemKey);
+  if (!selectedCode && !selectedName && !selectedKey) return true;
+
+  const recordItemId = itemIdFromRecord(record, candidates);
+  if (selectedId && recordItemId) return recordItemId === selectedId;
+
+  const recordCode = itemCodeFromRecord(record);
+  if (selectedCode && recordCode) return recordCode === selectedCode;
+
+  const candidateName = itemNameFromRecord(record, candidates);
+  if (selectedName && candidateName) return candidateName === selectedName;
+
+  const candidateValue = cleanKey(candidates.map((candidate) => getText(record, [candidate])).filter(Boolean).join("|"));
+  return Boolean(selectedKey && candidateValue && candidateValue === selectedKey);
 }
 
 function matchesWarehouse(record, filters, candidates = ["WAREHOUSE", "Warehouse", "Warehouse ID"]) {
@@ -379,6 +433,7 @@ async function fetchItems() {
         label,
         code,
         name,
+        id: displayValue(record.ID || record.ID1 || record.ID_),
       };
     })
     .filter((item) => item.label)
@@ -403,15 +458,88 @@ async function fetchWarehouses() {
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function renderOptions(select, records, placeholder) {
   select.innerHTML = [
-    `<option value="">${placeholder}</option>`,
-    ...records.map((record) => `<option value="${record.value}">${record.label}</option>`),
+    `<option value="">${escapeHtml(placeholder)}</option>`,
+    ...records.map(
+      (record) =>
+        `<option value="${escapeHtml(record.value)}" data-id="${escapeHtml(record.id)}" data-code="${escapeHtml(record.code)}" data-name="${escapeHtml(record.name)}">${escapeHtml(record.label)}</option>`,
+    ),
   ].join("");
 }
 
+function renderItemOptions(records) {
+  els.itemSearch.value = "";
+  state.selectedItem = null;
+  closeItemSuggestions();
+}
+
+function resolveSelectedItem() {
+  const typed = els.itemSearch.value.trim();
+  if (!typed) return null;
+  if (state.selectedItem?.label === typed) return state.selectedItem;
+
+  const normalized = cleanKey(typed);
+  return (
+    state.items.find((item) => item.label === typed) ||
+    state.items.find((item) => cleanKey(item.code) === normalized) ||
+    state.items.find((item) => cleanKey(item.label) === normalized) ||
+    null
+  );
+}
+
+function closeItemSuggestions() {
+  els.itemSuggestions.classList.remove("is-open");
+  els.itemSuggestions.innerHTML = "";
+}
+
+function chooseItem(item) {
+  state.selectedItem = item;
+  els.itemSearch.value = item.label;
+  closeItemSuggestions();
+}
+
+function showItemSuggestions() {
+  if (!state.mastersLoaded || els.itemSearch.disabled) return;
+
+  state.selectedItem = null;
+  const query = cleanKey(els.itemSearch.value);
+  const matches = state.items
+    .filter((item) => {
+      if (!query) return true;
+      return cleanKey(`${item.code} ${item.name} ${item.label}`).includes(query);
+    })
+    .slice(0, 60);
+
+  if (!matches.length) {
+    els.itemSuggestions.innerHTML = `<div class="suggestion-empty">No matching items</div>`;
+    els.itemSuggestions.classList.add("is-open");
+    return;
+  }
+
+  els.itemSuggestions.innerHTML = matches
+    .map(
+      (item, index) =>
+        `<button class="suggestion-option" type="button" data-index="${index}" title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</button>`,
+    )
+    .join("");
+
+  [...els.itemSuggestions.querySelectorAll(".suggestion-option")].forEach((button, index) => {
+    button.addEventListener("click", () => chooseItem(matches[index]));
+  });
+  els.itemSuggestions.classList.add("is-open");
+}
+
 function setMasterDependentControls(enabled) {
-  els.itemSelect.disabled = !enabled;
+  els.itemSearch.disabled = !enabled;
   els.warehouseSelect.disabled = !enabled;
   els.applyButton.disabled = !enabled;
 }
@@ -442,7 +570,7 @@ async function loadMasters() {
     state.itemCount = items.length;
     state.warehouseCount = warehouses.length;
     state.mastersLoaded = true;
-    renderOptions(els.itemSelect, items, "Select item");
+    renderItemOptions(items);
     renderOptions(els.warehouseSelect, warehouses, "Select warehouse");
     setMasterDependentControls(true);
     els.loadMastersButton.textContent = "Masters Loaded";
@@ -599,7 +727,7 @@ async function transactionMovements(filters) {
   });
 
   reprocessRows.forEach((record) => {
-    if (matchesItem(record, filters, ["REPROCESS OUT", "Reprocess Out", "ITEM NAME"]) && matchesWarehouse(record, filters)) {
+    if (matchesItem(record, filters, ["REPROCESS OUT", "Reprocess Out"]) && matchesWarehouse(record, filters)) {
       movements.push(mapReprocessOut(record));
     }
 
@@ -611,6 +739,12 @@ async function transactionMovements(filters) {
           movements.push(mapReprocessIn(merged));
         }
       });
+    } else if (
+      itemIdFromRecord(record, ["ITEM NAME", "Item Name"]) &&
+      matchesItem(record, filters, ["ITEM NAME", "Item Name"]) &&
+      matchesWarehouse(record, filters)
+    ) {
+      movements.push(mapReprocessIn(record));
     }
   });
 
@@ -737,7 +871,7 @@ function renderSummary(openingStock, rows) {
   els.totalOutward.textContent = formatQty(totals.outward);
   els.closingBalance.textContent = formatQty(closing);
   els.rowCount.textContent = `${rows.length} ${rows.length === 1 ? "row" : "rows"}`;
-  els.rangeLabel.textContent = `${els.itemSelect.selectedOptions[0]?.text || "All items"} in ${els.warehouseSelect.selectedOptions[0]?.text || "All warehouses"}, ${formatDate(els.fromDate.value)} to ${formatDate(els.toDate.value)}`;
+  els.rangeLabel.textContent = `${els.itemSearch.value || "All items"} in ${els.warehouseSelect.selectedOptions[0]?.text || "All warehouses"}, ${formatDate(els.fromDate.value)} to ${formatDate(els.toDate.value)}`;
 }
 
 function setStatus(message) {
@@ -752,9 +886,13 @@ async function applyFilters() {
     return;
   }
 
+  const selectedItem = resolveSelectedItem();
   const filters = {
-    itemKey: els.itemSelect.value,
-    itemName: els.itemSelect.selectedOptions[0]?.text || "",
+    itemKey: selectedItem?.value || "",
+    itemName: selectedItem?.label || els.itemSearch.value.trim(),
+    itemId: selectedItem?.id || "",
+    itemCode: selectedItem?.code || "",
+    itemRawName: selectedItem?.name || "",
     warehouseKey: els.warehouseSelect.value,
     warehouseName: els.warehouseSelect.selectedOptions[0]?.text || "",
     fromDate: els.fromDate.value,
@@ -766,8 +904,8 @@ async function applyFilters() {
     filters.toDate = filters.fromDate;
   }
 
-  if (state.creatorReady && (!filters.itemKey || !filters.warehouseKey)) {
-    renderEmptyRegister("Select an item and warehouse, then click Apply.");
+  if (state.creatorReady && (!selectedItem || !filters.warehouseKey)) {
+    renderEmptyRegister("Select a valid item from the filtered list and warehouse, then click Apply.");
     return;
   }
 
@@ -846,6 +984,11 @@ async function boot() {
   els.applyButton.addEventListener("click", applyFilters);
   els.exportButton.addEventListener("click", exportCsv);
   els.loadMastersButton.addEventListener("click", loadMasters);
+  els.itemSearch.addEventListener("input", showItemSuggestions);
+  els.itemSearch.addEventListener("focus", showItemSuggestions);
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".search-box")) closeItemSuggestions();
+  });
   setMasterDependentControls(false);
 
   try {

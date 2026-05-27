@@ -3,8 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>Stock Register Widget</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260528-0110" />
   </head>
   <body>
     <main class="widget-shell">
@@ -21,21 +24,24 @@
       <section class="filters" aria-label="Stock register filters">
         <label>
           <span>Item Name</span>
-          <select id="itemSelect">
-            <option value="CASHEW-240">Cashew W240</option>
-            <option value="ALMOND-REG">Almond Regular</option>
-            <option value="PISTA-KERNEL">Pista Kernel</option>
-            <option value="RAISIN-GOLD">Raisin Gold</option>
-          </select>
+          <div class="search-box">
+            <input
+              id="itemSearch"
+              name="stock-register-item-search-20260527"
+              type="search"
+              placeholder="Type item code or name"
+              autocomplete="new-password"
+              autocapitalize="off"
+              spellcheck="false"
+            />
+            <div class="suggestions" id="itemSuggestions" role="listbox"></div>
+          </div>
         </label>
 
         <label>
           <span>Warehouse</span>
           <select id="warehouseSelect">
-            <option value="MAIN">Main Warehouse</option>
-            <option value="BLR">Bangalore Warehouse</option>
-            <option value="CHN">Chennai Warehouse</option>
-            <option value="MUM">Mumbai Warehouse</option>
+            <option value="">Select warehouse</option>
           </select>
         </label>
 
@@ -115,6 +121,6 @@
     </main>
 
     <script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=20260528-0110"></script>
   </body>
 </html>
