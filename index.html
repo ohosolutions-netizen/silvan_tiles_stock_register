@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stock Register Widget</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="widget-shell">
+      <header class="topbar">
+        <div>
+          <h1>Stock Register</h1>
+          <p>Item-wise movement ledger with opening stock and running balance.</p>
+        </div>
+        <button class="icon-button" id="exportButton" type="button" title="Export visible rows">
+          <span aria-hidden="true">CSV</span>
+        </button>
+      </header>
+
+      <section class="filters" aria-label="Stock register filters">
+        <label>
+          <span>Item Name</span>
+          <select id="itemSelect">
+            <option value="CASHEW-240">Cashew W240</option>
+            <option value="ALMOND-REG">Almond Regular</option>
+            <option value="PISTA-KERNEL">Pista Kernel</option>
+            <option value="RAISIN-GOLD">Raisin Gold</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Warehouse</span>
+          <select id="warehouseSelect">
+            <option value="MAIN">Main Warehouse</option>
+            <option value="BLR">Bangalore Warehouse</option>
+            <option value="CHN">Chennai Warehouse</option>
+            <option value="MUM">Mumbai Warehouse</option>
+          </select>
+        </label>
+
+        <label>
+          <span>From Date</span>
+          <input id="fromDate" type="date" />
+        </label>
+
+        <label>
+          <span>To Date</span>
+          <input id="toDate" type="date" />
+        </label>
+
+        <button class="secondary-button" id="loadMastersButton" type="button">Load Masters</button>
+        <button class="primary-button" id="applyButton" type="button">Apply</button>
+      </section>
+
+      <p class="load-status" id="loadStatus" role="status">Preparing widget...</p>
+
+      <section class="register-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Movement Details</h2>
+            <p id="rangeLabel">Showing sample register rows</p>
+          </div>
+          <span class="status-pill" id="rowCount">0 rows</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Bill Number</th>
+                <th>Party(Customer)</th>
+                <th>Op Stock</th>
+                <th>Purchase</th>
+                <th>Sales</th>
+                <th>Credit Note</th>
+                <th>Vendor Credit</th>
+                <th>Trans.Out</th>
+                <th>Trans.In</th>
+                <th>Reprocess Out</th>
+                <th>Reprocess In</th>
+                <th>Shortage</th>
+                <th>Surplus</th>
+                <th>Balance</th>
+              </tr>
+            </thead>
+            <tbody id="registerBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="Stock summary">
+        <article>
+          <span>Opening Stock</span>
+          <strong id="openingStock">0</strong>
+          <small>Previous day closing</small>
+        </article>
+        <article>
+          <span>Total Inward</span>
+          <strong id="totalInward">0</strong>
+          <small>Purchase, credit, transfer, reprocess, surplus</small>
+        </article>
+        <article>
+          <span>Total Outward</span>
+          <strong id="totalOutward">0</strong>
+          <small>Sales, vendor credit, transfer, reprocess, shortage</small>
+        </article>
+        <article>
+          <span>Closing Balance</span>
+          <strong id="closingBalance">0</strong>
+          <small>As of selected to date</small>
+        </article>
+      </section>
+    </main>
+
+    <script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
