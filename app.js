@@ -13,13 +13,13 @@ const REPORTS = {
   reprocess: "API_REPROCESS",
   reprocessLineItem: "REPROCESS_LINEITEM_Report",
   adjustment: "API_INVENTORY_ADJUSTMENT",
+  itemMaster: "API_ITEM_MASTER",
 };
 
 const COLUMNS = [
   "date",
   "billNumber",
   "party",
-  "opStock",
   "purchase",
   "sales",
   "creditNote",
@@ -272,6 +272,8 @@ function blankMovement(overrides) {
     date: "",
     billNumber: "",
     party: "",
+    addedTime: "",
+    unit: "",
     purchase: 0,
     sales: 0,
     creditNote: 0,
@@ -284,6 +286,124 @@ function blankMovement(overrides) {
     surplus: 0,
     ...overrides,
   };
+}
+
+function getAddedTime(record) {
+  return getText(record, ["Added_Time", "Added Time", "ADDED TIME", "Created_Time", "Created Time"]);
+}
+
+function getUnit(record) {
+  return getText(record, ["UNIT", "Unit", "unit"]);
+}
+
+// Look up the selected item in API_ITEM_MASTER to read Tiles / Multi Unit /
+// Tiles Information. Returns { tiles, multiUnit, unitMap } or null.
+async function fetchItemMasterForItem(filters) {
+  if (!state.creatorReady) return null;
+  if (!filters.itemCode && !filters.itemId) return null;
+  const itemCode = String(filters.itemCode || "").trim();
+  try {
+    let records = [];
+    if (itemCode) {
+      // Try Item_Code / ITEMCODE / Item Code field — first match wins
+      for (const fieldName of ["Item_Code", "ITEMCODE", "ItemCode", "Code", "Item Code"]) {
+        try {
+          const r = await creatorGetRecords(REPORTS.itemMaster, {
+            criteria: `${fieldName} == "${itemCode.replace(/"/g, '\\"')}"`,
+          });
+          if (r.length) {
+            records = r;
+            state._itemMasterCriteria = `matched via ${fieldName}`;
+            break;
+          }
+        } catch (e) {
+          // Ignore failed field name and try next
+        }
+      }
+    }
+    if (!records.length && filters.itemId) {
+      records = await creatorGetRecords(REPORTS.itemMaster, {
+        criteria: `ID == ${filters.itemId}`,
+      });
+      if (records.length) state._itemMasterCriteria = "matched via ID fallback";
+    }
+    if (!records.length) {
+      state._itemMasterCriteria = `no match (code:"${itemCode}", id:"${filters.itemId}")`;
+      return null;
+    }
+    const record = records[0];
+    // Capture raw structure for diagnosis
+    state._itemMasterKeys = Object.keys(record).join("|");
+    const tiles = String(getText(record, ["Tiles", "tiles"])).toLowerCase() === "true";
+    const multiUnit = String(getText(record, ["Multi_Unit", "Multi Unit", "MultiUnit", "MULTI UNIT"])).toLowerCase() === "true";
+    const unitMap = {};
+    if (tiles && multiUnit) {
+      const tilesInfo = getField(record, ["Tiles_Information", "Tiles Information", "TILES INFORMATION", "Tiles_Info", "TilesInformation"]);
+      state._tilesInfoRaw = JSON.stringify(tilesInfo).slice(0, 250);
+      if (Array.isArray(tilesInfo)) {
+        tilesInfo.forEach((row) => {
+          // Unit lives inside the Package_Type lookup object: row.Package_Type.Unit
+          let unitName = "";
+          const packageType = getField(row, ["Package_Type", "Package Type", "PackageType", "PACKAGE_TYPE"]);
+          if (packageType && typeof packageType === "object") {
+            unitName = String(
+              packageType.Unit || packageType.unit || packageType.UNIT ||
+              packageType.display_value || packageType.zc_display_value || ""
+            ).trim().toLowerCase();
+          }
+          if (!unitName) {
+            unitName = String(getText(row, ["Unit", "unit", "UNIT"]) || "").trim().toLowerCase();
+          }
+          const nos = getNumber(row, ["NOS", "Nos", "nos"]);
+          if (unitName && nos > 0) unitMap[unitName] = nos;
+        });
+      }
+    }
+    return { tiles, multiUnit, unitMap };
+  } catch (error) {
+    console.error("[StockReg] item master fetch failed:", error);
+    state._itemMasterCriteria = `error: ${error?.message || String(error)}`;
+    return null;
+  }
+}
+
+function unitFactor(unit, itemMaster) {
+  if (!itemMaster || !itemMaster.tiles || !itemMaster.multiUnit) return 1;
+  if (!unit) return 1;
+  const key = String(unit).toLowerCase().trim();
+  if (!key || key === "nos" || key === "no" || key === "no." || key === "nos.") return 1;
+  return itemMaster.unitMap[key] || 1;
+}
+
+function applyUnitConversion(movements, itemMaster) {
+  if (!itemMaster || !itemMaster.tiles || !itemMaster.multiUnit) return;
+  movements.forEach((m) => {
+    const factor = unitFactor(m.unit, itemMaster);
+    if (factor === 1) return;
+    MOVEMENT_FIELDS.forEach((field) => {
+      if (m[field]) m[field] = m[field] * factor;
+    });
+  });
+}
+
+// Convert "27-May-2026 16:12:23" or ISO strings to a millis epoch for sorting.
+// Returns 0 when unparseable (so unknowns sort to the start).
+function addedTimeToMs(value) {
+  if (!value) return 0;
+  const text = String(value).trim();
+  const ms = Date.parse(text);
+  if (!Number.isNaN(ms)) return ms;
+  // Zoho's "DD-MMM-YYYY HH:MM:SS" needs swapping to a format Date.parse handles
+  const m = text.match(/^(\d{1,2})[-/ ]([A-Za-z]{3,})[-/ ](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) {
+    const [, day, monRaw, year, hh = "0", mm = "0", ss = "0"] = m;
+    const months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+    const month = months.indexOf(monRaw.slice(0, 3).toLowerCase());
+    if (month >= 0) {
+      return new Date(Number(year), month, Number(day), Number(hh), Number(mm), Number(ss)).getTime();
+    }
+  }
+  return 0;
 }
 
 function itemKeyFromRecord(record) {
@@ -618,6 +738,7 @@ function mapPurchase(record) {
     date: getDate(record, ["DELIVERY DATE", "Delivery Date", "INV DATE", "Inv Date", "Date"]),
     billNumber: getText(record, ["Purchase Receives No", "PURCHASE RECEIVES NO", "POR NO", "INVOICE NO", "Invoice No"]),
     party: getText(record, ["SUPPLIER", "Vendor", "VENDOR", "BRANCH", "Party"]),
+    addedTime: getAddedTime(record),
     purchase: getNumber(record, ["RECEIVED QTY", "Received Qty", "Quantity", "QTY"]),
   });
 }
@@ -627,6 +748,7 @@ function mapSales(record) {
     date: getDate(record, ["Date_field", "DATE", "Invoice_Date", "Invoice Date", "INV DATE", "Inv_Date", "Date"]),
     billNumber: getText(record, ["Sales_Invoice", "Sales Invoice", "SALES INVOICE", "Invoice_No", "INVOICE NO", "Invoice No"]),
     party: getText(record, ["Customer_Name", "CUSTOMER NAME", "Customer Name", "CUSTOMER", "Customer", "Party"]),
+    addedTime: getAddedTime(record),
     sales: getQuantity(record, ["QUANTITY", "Quantity", "QTY", "Qty", "TOTAL_QTY"], ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]),
   });
 }
@@ -636,6 +758,7 @@ function mapCreditNote(record) {
     date: getDate(record, ["DATE", "Credit Date", "CREDIT DATE", "Date"]),
     billNumber: getText(record, ["Credit Note", "CREDIT NOTE", "CREDIT NO", "Credit No"]),
     party: getText(record, ["CUSTOMER NAME", "Customer Name", "CUSTOMER", "Customer"]),
+    addedTime: getAddedTime(record),
     creditNote: getNumber(record, ["QTY", "Qty", "Quantity"]),
   });
 }
@@ -645,6 +768,7 @@ function mapVendorCredit(record) {
     date: getDate(record, ["DATE", "Vendor Credit Date", "Date"]),
     billNumber: getText(record, ["Vendor Credits", "VENDOR CREDITS", "PREVIOUS BILL NO", "Previous Bill No"]),
     party: getText(record, ["VENDOR", "Vendor", "SUPPLIER", "Supplier"]),
+    addedTime: getAddedTime(record),
     vendorCredit: getNumber(record, ["RETURN QTY", "Return Qty", "ACTUAL QTY", "Actual Qty", "Quantity"]),
   });
 }
@@ -657,6 +781,7 @@ function mapTransfer(record, direction) {
       direction === "out"
         ? getText(record, ["Destination Warehouse", "DESTINATION WAREHOUSE"])
         : getText(record, ["Source Warehouse", "SOURCE WAREHOUSE"]),
+    addedTime: getAddedTime(record),
     [direction === "out" ? "transOut" : "transIn"]: getNumber(record, [
       "Transfer Quantity",
       "TRANSFER QUANTITY",
@@ -671,6 +796,7 @@ function mapReprocessOut(record) {
     date: getDate(record, ["Date", "DATE"]),
     billNumber: getText(record, ["ORDER NO", "Order No", "REPROCESS", "Reprocess"]),
     party: "Reprocess output",
+    addedTime: getAddedTime(record),
     reprocessOut: getNumber(record, ["QUANTITY", "Quantity", "REPROCESS OUT", "Reprocess Out", "TOTAL QTY"]),
   });
 }
@@ -680,6 +806,7 @@ function mapReprocessIn(record) {
     date: getDate(record, ["Date", "DATE"]),
     billNumber: getText(record, ["REPROCESS", "Reprocess", "ORDER NO", "Order No"]),
     party: "Reprocess consumption",
+    addedTime: getAddedTime(record),
     reprocessIn: getNumber(record, ["TOTAL QTY", "Total Qty", "QTY", "Qty", "QUANTITY", "Quantity"]),
   });
 }
@@ -690,6 +817,7 @@ function mapAdjustment(record) {
     date: getDate(record, ["DATE", "Date"]),
     billNumber: getText(record, ["SI No", "SI NO", "ORDER NO", "REFERENCE NUMBER", "Reference Number"]),
     party: getText(record, ["REASON", "Reason", "ACCOUNT", "Account"]) || "Inventory adjustment",
+    addedTime: getAddedTime(record),
     shortage: quantity < 0 ? Math.abs(quantity) : 0,
     surplus: quantity > 0 ? quantity : 0,
   });
@@ -738,6 +866,7 @@ async function transactionMovements(filters) {
     const date = getDate(record, ["Delivery_Date", "DELIVERY DATE", "Delivery Date", "Inv_Date", "INV DATE", "Inv Date", "Date_field", "Date"]);
     const billNo = getText(record, ["Invoice_No", "INVOICE NO", "Invoice No", "Purchase_Receives_No", "PURCHASE RECEIVES NO", "POR NO"]);
     const supplier = getText(record, ["Supplier", "SUPPLIER", "Vendor", "VENDOR", "BRANCH", "Party"]);
+    const addedTime = getAddedTime(record);
     const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
     if (Array.isArray(lineItems) && lineItems.length > 0) {
       lineItems.forEach((lineItem) => {
@@ -748,6 +877,8 @@ async function transactionMovements(filters) {
             date,
             billNumber: billNo,
             party: supplier,
+            addedTime,
+            unit: getUnit(lineItem),
             purchase: getNumber(lineItem, ["RECEIVED_QTY", "Received_Qty", "RECEIVED QTY", "Received Qty", "QUANTITY", "Quantity", "QTY", "Qty", "TOTAL_QTY"]),
           }));
         }
@@ -766,7 +897,9 @@ async function transactionMovements(filters) {
         const merged = { ...record, ...lineItem };
         if (matchesItem(merged, filters, ["ITEM_NAME", "ITEM NAME", "ITEM CODE", "ITEMCODE"])) {
           matchedCounts.sales++;
-          movements.push(mapSales(merged));
+          const m = mapSales(merged);
+          m.unit = getUnit(lineItem);
+          movements.push(m);
         }
       });
     } else if (matchesItem(record, filters, ["ITEM_NAME", "ITEM NAME", "ITEM CODE", "ITEMCODE"])) {
@@ -780,6 +913,7 @@ async function transactionMovements(filters) {
     const date = getDate(record, ["Date_field", "DATE", "Credit_Date", "Credit Date", "CREDIT DATE", "Date"]);
     const billNo = getText(record, ["Credit_Note", "Credit Note", "CREDIT NOTE", "Credit_No", "CREDIT NO", "Credit No"]);
     const customer = getText(record, ["Customer_Name", "CUSTOMER NAME", "Customer Name", "CUSTOMER", "Customer"]);
+    const addedTime = getAddedTime(record);
     const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
     if (Array.isArray(lineItems) && lineItems.length > 0) {
       lineItems.forEach((lineItem) => {
@@ -790,6 +924,8 @@ async function transactionMovements(filters) {
             date,
             billNumber: billNo,
             party: customer,
+            addedTime,
+            unit: getUnit(lineItem),
             creditNote: getNumber(lineItem, ["RETURN_QTY", "RETURN QTY", "Return Qty", "QUANTITY", "Quantity", "QTY", "Qty"]),
           }));
         }
@@ -805,6 +941,7 @@ async function transactionMovements(filters) {
     const date = getDate(record, ["Date_field", "DATE", "Vendor_Credit_Date", "Vendor Credit Date", "Date"]);
     const billNo = getText(record, ["Vendor_Credits", "Vendor Credits", "VENDOR CREDITS", "Previous_Bill_No", "PREVIOUS BILL NO", "Previous Bill No"]);
     const vendor = getText(record, ["Vendor", "VENDOR", "Supplier", "SUPPLIER"]);
+    const addedTime = getAddedTime(record);
     const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
     if (Array.isArray(lineItems) && lineItems.length > 0) {
       lineItems.forEach((lineItem) => {
@@ -815,6 +952,8 @@ async function transactionMovements(filters) {
             date,
             billNumber: billNo,
             party: vendor,
+            addedTime,
+            unit: getUnit(lineItem),
             vendorCredit: getNumber(lineItem, ["RETURN_QTY", "RETURN QTY", "Return Qty", "ACTUAL_QTY", "ACTUAL QTY", "Actual Qty", "QUANTITY", "Quantity"]),
           }));
         }
@@ -830,6 +969,7 @@ async function transactionMovements(filters) {
     const date = getDate(record, ["Date_field", "Date", "DATE"]);
     const billNo = getText(record, ["Branch_Transfer_No", "Branch Transfer No", "BRANCH TRANSFER NO", "Branch Transfer IN Out"]);
     const destination = getText(record, ["Destination_Warehouse", "Destination Warehouse", "DESTINATION WAREHOUSE"]);
+    const addedTime = getAddedTime(record);
     const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
     if (Array.isArray(lineItems) && lineItems.length > 0) {
       lineItems.forEach((lineItem) => {
@@ -840,6 +980,7 @@ async function transactionMovements(filters) {
             date,
             billNumber: billNo,
             party: destination,
+            addedTime,
             transOut: getNumber(lineItem, ["Transfer_Quantity", "Transfer Quantity", "TRANSFER QUANTITY", "QUANTITY", "Quantity", "QTY", "Qty"]),
           }));
         }
@@ -855,6 +996,7 @@ async function transactionMovements(filters) {
     const date = getDate(record, ["Date_field", "Date", "DATE"]);
     const billNo = getText(record, ["Branch_Transfer_No", "Branch Transfer No", "BRANCH TRANSFER NO", "Branch Transfer IN Out"]);
     const source = getText(record, ["Source_Warehouse", "Source Warehouse", "SOURCE WAREHOUSE"]);
+    const addedTime = getAddedTime(record);
     const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
     if (Array.isArray(lineItems) && lineItems.length > 0) {
       lineItems.forEach((lineItem) => {
@@ -865,6 +1007,7 @@ async function transactionMovements(filters) {
             date,
             billNumber: billNo,
             party: source,
+            addedTime,
             transIn: getNumber(lineItem, ["Transfer_Quantity", "Transfer Quantity", "TRANSFER QUANTITY", "QUANTITY", "Quantity", "QTY", "Qty"]),
           }));
         }
@@ -881,6 +1024,7 @@ async function transactionMovements(filters) {
   reprocessRows.forEach((record) => {
     const date = getDate(record, ["Date_field", "Date", "DATE"]);
     const orderNo = getText(record, ["ORDER_NO", "ORDER NO", "Order No"]);
+    const addedTime = getAddedTime(record);
 
     // Reprocess OUT: the composite/produced item
     if (matchesItem(record, filters, ["COMPOSITE_ITEM", "Composite Item", "REPROCESS OUT", "Reprocess Out"]) && matchesWarehouse(record, filters)) {
@@ -889,6 +1033,7 @@ async function transactionMovements(filters) {
         date,
         billNumber: orderNo,
         party: "Reprocess output",
+        addedTime,
         reprocessOut: getNumber(record, ["QUANTITY", "Quantity", "TOTAL QTY", "Total Qty"]),
       }));
     }
@@ -904,6 +1049,7 @@ async function transactionMovements(filters) {
             date,
             billNumber: orderNo,
             party: "Reprocess consumption",
+            addedTime,
             reprocessIn: getNumber(lineItem, ["TOTAL_QTY", "TOTAL QTY", "Total Qty", "QTY", "Qty"]),
           }));
         }
@@ -917,6 +1063,7 @@ async function transactionMovements(filters) {
     const date = getDate(record, ["Date_field", "DATE", "Date"]);
     const billNo = getText(record, ["Reference_Number", "REFERENCE NUMBER", "Reference Number", "Order_No", "ORDER NO", "SI_No", "SI No", "SI NO"]);
     const reason = getText(record, ["Reason", "REASON", "Account", "ACCOUNT"]) || "Inventory adjustment";
+    const addedTime = getAddedTime(record);
     const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
     if (Array.isArray(lineItems) && lineItems.length > 0) {
       lineItems.forEach((lineItem) => {
@@ -928,6 +1075,7 @@ async function transactionMovements(filters) {
             date,
             billNumber: billNo,
             party: reason,
+            addedTime,
             shortage: quantity < 0 ? Math.abs(quantity) : 0,
             surplus: quantity > 0 ? quantity : 0,
           }));
@@ -944,7 +1092,17 @@ async function transactionMovements(filters) {
   return {
     movements: movements
       .filter((movement) => movement.date && hasStockMovement(movement))
-      .sort((a, b) => a.date.localeCompare(b.date) || a.billNumber.localeCompare(b.billNumber)),
+      .sort((a, b) => {
+        // Primary: transaction date (chronological)
+        const dateCmp = a.date.localeCompare(b.date);
+        if (dateCmp !== 0) return dateCmp;
+        // Secondary: added_time within the same date (entry order)
+        const ta = addedTimeToMs(a.addedTime);
+        const tb = addedTimeToMs(b.addedTime);
+        if (ta !== tb) return ta - tb;
+        // Tertiary tiebreaker: bill number
+        return a.billNumber.localeCompare(b.billNumber);
+      }),
     counts: {
       purchase: purchases.length,
       sales: sales.length,
@@ -978,10 +1136,22 @@ async function loadStockRegister(filters) {
     return loadSampleStockRegister(filters);
   }
 
-  const [financialYearOpening, { movements, counts, matchedCounts }] = await Promise.all([
+  const [financialYearOpening, { movements, counts, matchedCounts }, itemMaster] = await Promise.all([
     openingStockFromReport(filters),
     transactionMovements(filters),
+    fetchItemMasterForItem(filters),
   ]);
+
+  // Diagnostic for the UI
+  const firstUnit = movements.find((m) => m.unit)?.unit || "";
+  if (itemMaster) {
+    state._itemMasterDebug = `[${state._itemMasterCriteria}] tiles:${itemMaster.tiles} multiUnit:${itemMaster.multiUnit} unitMap:${JSON.stringify(itemMaster.unitMap)} firstUnit:"${firstUnit}" keys:[${state._itemMasterKeys}] tilesInfo:${state._tilesInfoRaw}`;
+  } else {
+    state._itemMasterDebug = `itemMaster:null [${state._itemMasterCriteria || "no attempt"}] firstUnit:"${firstUnit}"`;
+  }
+
+  // Convert qty to base unit (Nos) using item master's Tiles Information map
+  applyUnitConversion(movements, itemMaster);
 
   const beforeFromDate = movements.filter((movement) => beforeDate(movement.date, filters.fromDate));
   const selectedRange = movements.filter((movement) => inDateRange(movement.date, filters.fromDate, filters.toDate));
@@ -1132,10 +1302,11 @@ async function applyFilters() {
     const matchStatus = m
       ? `Matched — Pur:${m.purchase} | Sales:${m.sales} | TxO:${m.transferOut} | TxI:${m.transferIn} | RprOut:${m.reprocessOut} | RprIn:${m.reprocessIn} | Adj:${m.adjustment}`
       : "";
+    const masterDebug = state._itemMasterDebug ? ` || Master: ${state._itemMasterDebug}` : "";
     if (state.warnings.length) {
-      els.loadStatus.textContent = `${masterStatus} ${countStatus} || ${matchStatus} | ${state.warnings.length} warning(s): ${state.warnings.slice(0, 2).join(" | ")}`;
+      els.loadStatus.textContent = `${masterStatus} ${countStatus} || ${matchStatus}${masterDebug} | ${state.warnings.length} warning(s): ${state.warnings.slice(0, 2).join(" | ")}`;
     } else {
-      els.loadStatus.textContent = `${masterStatus} ${countStatus} || ${matchStatus}`;
+      els.loadStatus.textContent = `${masterStatus} ${countStatus} || ${matchStatus}${masterDebug}`;
     }
   } catch (error) {
     console.error(error);
@@ -1154,7 +1325,6 @@ function exportCsv() {
     "Date",
     "Bill Number",
     "Party(Customer)",
-    "Op Stock",
     "Purchase",
     "Sales",
     "Credit Note",
