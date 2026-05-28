@@ -7,18 +7,26 @@
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
     <title>Stock Register Widget</title>
-    <link rel="stylesheet" href="styles.css?v=20260528-1900" />
+    <link rel="stylesheet" href="styles.css?v=20260528-3100" />
   </head>
   <body>
+    <div id="loadingOverlay" class="loading-overlay" hidden>
+      <div class="loading-content">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <p class="loading-text" id="loadingText">Loading masters...</p>
+        <p class="loading-sub" id="loadingSub">This may take up to a minute for large catalogs</p>
+      </div>
+    </div>
+
     <main class="widget-shell">
 
       <header class="topbar">
         <div>
-          <h1>Stock Register</h1>
+          <h1>Stock Register <span class="version-tag" id="versionTag">v3500</span></h1>
           <p>Item-wise movement ledger with opening stock and running balance.</p>
         </div>
-        <button class="icon-button" id="exportButton" type="button" title="Export visible rows">
-          <span aria-hidden="true">CSV</span>
+        <button class="secondary-button" id="exportButton" type="button" title="Download the current register as a CSV file">
+          Download CSV
         </button>
       </header>
 
@@ -118,9 +126,33 @@
           <small>As of selected to date</small>
         </article>
       </section>
+
+      <section class="dev-diagnostics" id="devDiagnostics" hidden>
+        <header class="dev-diag-header">
+          <span class="dev-diag-badge">DEV</span>
+          <div class="dev-diag-titles">
+            <h3>Session Diagnostics</h3>
+            <span class="dev-diag-sub">Internal counters and lookups — not part of the user-facing register</span>
+          </div>
+        </header>
+        <div class="dev-diag-grid">
+          <article class="dev-diag-card">
+            <h4>API rows fetched</h4>
+            <dl id="diagApiRows"></dl>
+          </article>
+          <article class="dev-diag-card">
+            <h4>Matched (item + warehouse)</h4>
+            <dl id="diagMatched"></dl>
+          </article>
+          <article class="dev-diag-card dev-diag-card--wide">
+            <h4>Item master lookup</h4>
+            <pre id="diagMaster">(not yet loaded)</pre>
+          </article>
+        </div>
+      </section>
     </main>
 
     <script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
-    <script src="app.js?v=20260528-2500"></script>
+    <script src="app.js?v=20260528-3500"></script>
   </body>
 </html>

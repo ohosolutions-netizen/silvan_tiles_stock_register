@@ -14,6 +14,7 @@ const REPORTS = {
   reprocessLineItem: "REPROCESS_LINEITEM_Report",
   adjustment: "API_INVENTORY_ADJUSTMENT",
   itemMaster: "API_ITEM_MASTER",
+  apiOpeningStock: "API_OPENING_STOCK",
 };
 
 const COLUMNS = [
@@ -63,7 +64,64 @@ const els = {
   loadStatus: document.querySelector("#loadStatus"),
   rowCount: document.querySelector("#rowCount"),
   registerBody: document.querySelector("#registerBody"),
+  loadingOverlay: document.querySelector("#loadingOverlay"),
+  loadingText: document.querySelector("#loadingText"),
+  loadingSub: document.querySelector("#loadingSub"),
+  devDiagnostics: document.querySelector("#devDiagnostics"),
+  diagApiRows: document.querySelector("#diagApiRows"),
+  diagMatched: document.querySelector("#diagMatched"),
+  diagMaster: document.querySelector("#diagMaster"),
 };
+
+function renderDevDiagnostics({ counts, matchedCounts, masterDebug }) {
+  if (!els.devDiagnostics) return;
+  els.devDiagnostics.hidden = false;
+  if (counts) {
+    const rows = [
+      ["Purchase", counts.purchase],
+      ["Sales", counts.sales],
+      ["Credit Note", counts.creditNote],
+      ["Vendor Credit", counts.vendorCredit],
+      ["Transfer Out", counts.transferOut],
+      ["Transfer In", counts.transferIn],
+      ["Reprocess", counts.reprocess],
+      ["Reprocess Line Item", counts.reprocessLineItem],
+      ["Adjustment", counts.adjustment],
+    ];
+    els.diagApiRows.innerHTML = rows
+      .map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`)
+      .join("");
+  }
+  if (matchedCounts) {
+    const rows = [
+      ["Purchase", matchedCounts.purchase],
+      ["Sales", matchedCounts.sales],
+      ["Credit Note", matchedCounts.creditNote],
+      ["Vendor Credit", matchedCounts.vendorCredit],
+      ["Transfer Out", matchedCounts.transferOut],
+      ["Transfer In", matchedCounts.transferIn],
+      ["Reprocess Out", matchedCounts.reprocessOut],
+      ["Reprocess In", matchedCounts.reprocessIn],
+      ["Adjustment", matchedCounts.adjustment],
+    ];
+    els.diagMatched.innerHTML = rows
+      .map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`)
+      .join("");
+  }
+  els.diagMaster.textContent = masterDebug || "(no item selected)";
+}
+
+function showLoadingOverlay(text, sub) {
+  if (!els.loadingOverlay) return;
+  if (text) els.loadingText.textContent = text;
+  if (sub !== undefined) els.loadingSub.textContent = sub;
+  els.loadingOverlay.hidden = false;
+}
+
+function hideLoadingOverlay() {
+  if (!els.loadingOverlay) return;
+  els.loadingOverlay.hidden = true;
+}
 
 const state = {
   creatorReady: false,
@@ -651,11 +709,22 @@ function showItemSuggestions() {
   if (!state.mastersLoaded || els.itemSearch.disabled) return;
 
   state.selectedItem = null;
-  const query = cleanKey(els.itemSearch.value);
+  // Split the typed text into tokens so multi-word searches like
+  // "granite black" match "GRANITE EXPORT BLACK" (each word must appear,
+  // not necessarily contiguously). v=3100
+  const raw = (els.itemSearch.value || "").trim();
+  const tokens = raw
+    .toLowerCase()
+    .split(/\s+/)
+    .map((t) => cleanKey(t))
+    .filter(Boolean);
   const matches = state.items
     .filter((item) => {
-      if (!query) return true;
-      return cleanKey(`${item.code} ${item.name} ${item.label}`).includes(query);
+      if (tokens.length === 0) return true;
+      const haystack = cleanKey(
+        `${item.code || ""} ${item.name || ""} ${item.label || ""}`,
+      );
+      return tokens.every((token) => haystack.includes(token));
     })
     .slice(0, 60);
 
@@ -697,12 +766,12 @@ async function loadMasters() {
   els.loadMastersButton.disabled = true;
   els.loadMastersButton.textContent = "Loading Masters";
   setMasterDependentControls(false);
-  setStatus("Loading masters — may take a minute for large catalogs...");
+  showLoadingOverlay("Loading masters...", "This may take up to a minute for large catalogs");
 
   let elapsed = 0;
   const progressTimer = window.setInterval(() => {
     elapsed += 5;
-    setStatus(`Loading masters... (${elapsed}s elapsed, please wait)`);
+    if (els.loadingSub) els.loadingSub.textContent = `${elapsed}s elapsed — still loading...`;
   }, 5000);
 
   try {
@@ -730,6 +799,7 @@ async function loadMasters() {
     setStatus(detail || "Unable to load masters");
   } finally {
     window.clearInterval(progressTimer);
+    hideLoadingOverlay();
   }
 }
 
@@ -1119,16 +1189,53 @@ async function transactionMovements(filters) {
 }
 
 async function openingStockFromReport(filters) {
-  const openings = await creatorGetRecordsSafe(REPORTS.openings);
-  const match = openings.find(
-    (record) =>
-      matchesItem(record, filters, ["ITEMCODE", "ITEM CODE", "ITEM NAME", "Item Name"]) &&
-      matchesWarehouse(record, filters),
-  );
+  // Pull opening stock from BOTH reports.
+  //   ALL_OPENING_STOCK — flat report (one row per item+warehouse), typically FY opening
+  //   API_OPENING_STOCK — parent records (dated) with a LINE_ITEMS subform where
+  //                       each line carries the item code and Nos quantity
+  const [allOpenings, apiOpenings] = await Promise.all([
+    creatorGetRecordsSafe(REPORTS.openings),
+    creatorGetRecordsSafe(REPORTS.apiOpeningStock),
+  ]);
 
-  return match
-    ? getNumber(match, ["OPENING STOCK", "Opening Stock", "Opening", "QTY", "Quantity", "Opening Quantity"])
-    : 0;
+  const itemCandidates = [
+    "ITEMCODE", "ITEM CODE", "Item_Code", "ITEM_NAME", "ITEM NAME", "Item_Name", "Item Name",
+  ];
+  const warehouseCandidates = ["Warehouse_ID", "Warehouse ID", "WAREHOUSE", "Warehouse"];
+  const qtyCandidates = [
+    "Nos", "NOS", "OPENING_STOCK", "OPENING STOCK", "Opening Stock", "Opening_Stock",
+    "Opening", "QUANTITY", "Quantity", "QTY", "Qty", "Opening_Quantity", "Opening Quantity",
+  ];
+
+  // 1) Flat ALL_OPENING_STOCK
+  const allOpeningSum = allOpenings
+    .filter(
+      (record) =>
+        matchesItem(record, filters, itemCandidates) &&
+        matchesWarehouse(record, filters, warehouseCandidates),
+    )
+    .reduce((total, record) => total + getNumber(record, qtyCandidates), 0);
+
+  // 2) API_OPENING_STOCK with LINE_ITEMS subform, only entries dated BEFORE From Date
+  let apiOpeningSum = 0;
+  apiOpenings.forEach((record) => {
+    if (!matchesWarehouse(record, filters, warehouseCandidates)) return;
+    const entryDate = getDate(record, ["Date_field", "Date", "DATE"]);
+    if (entryDate && !beforeDate(entryDate, filters.fromDate)) return;
+    const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      lineItems.forEach((lineItem) => {
+        const merged = { ...record, ...lineItem };
+        if (matchesItem(merged, filters, itemCandidates)) {
+          apiOpeningSum += getNumber(lineItem, qtyCandidates);
+        }
+      });
+    } else if (matchesItem(record, filters, itemCandidates)) {
+      apiOpeningSum += getNumber(record, qtyCandidates);
+    }
+  });
+
+  return allOpeningSum + apiOpeningSum;
 }
 
 async function loadStockRegister(filters) {
@@ -1289,24 +1396,21 @@ async function applyFilters() {
   try {
     const result = await loadStockRegister(filters);
     state.visibleRows = result.rows;
+    state.openingStockValue = result.openingStock;
     renderSummary(result.openingStock, result.rows);
     renderTable(result.rows, result.openingStock);
     const masterStatus = state.creatorReady
       ? `Loaded ${state.itemCount} item options and ${state.warehouseCount} warehouse options.`
       : "Local preview mode.";
-    const c = result.counts;
-    const m = result.matchedCounts;
-    const countStatus = c
-      ? `API rows — Pur:${c.purchase} | Sales:${c.sales} | CrN:${c.creditNote} | VCr:${c.vendorCredit} | TxO:${c.transferOut} | TxI:${c.transferIn} | Rpr:${c.reprocess} | RprLI:${c.reprocessLineItem} | Adj:${c.adjustment}`
-      : "";
-    const matchStatus = m
-      ? `Matched — Pur:${m.purchase} | Sales:${m.sales} | TxO:${m.transferOut} | TxI:${m.transferIn} | RprOut:${m.reprocessOut} | RprIn:${m.reprocessIn} | Adj:${m.adjustment}`
-      : "";
-    const masterDebug = state._itemMasterDebug ? ` || Master: ${state._itemMasterDebug}` : "";
+    renderDevDiagnostics({
+      counts: result.counts,
+      matchedCounts: result.matchedCounts,
+      masterDebug: state._itemMasterDebug,
+    });
     if (state.warnings.length) {
-      els.loadStatus.textContent = `${masterStatus} ${countStatus} || ${matchStatus}${masterDebug} | ${state.warnings.length} warning(s): ${state.warnings.slice(0, 2).join(" | ")}`;
+      els.loadStatus.textContent = `${masterStatus} Register loaded with ${state.warnings.length} warning(s): ${state.warnings.slice(0, 2).join(" | ")}`;
     } else {
-      els.loadStatus.textContent = `${masterStatus} ${countStatus} || ${matchStatus}${masterDebug}`;
+      els.loadStatus.textContent = `${masterStatus} Register loaded.`;
     }
   } catch (error) {
     console.error(error);
@@ -1338,11 +1442,25 @@ function exportCsv() {
     "Balance",
   ];
 
+  const opening = Number(state.openingStockValue || 0);
+  const openingRow = {
+    date: els.fromDate.value,
+    billNumber: "Opening",
+    party: "Previous day closing stock",
+    balance: opening,
+  };
+
+  const csvCell = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const formatRowCell = (row, column) => {
+    const value = row[column];
+    if (value == null || value === "") return csvCell("");
+    return csvCell(value);
+  };
+
   const lines = [
     headings.join(","),
-    ...state.visibleRows.map((row) =>
-      COLUMNS.map((column) => `"${String(row[column] ?? "").replaceAll('"', '""')}"`).join(","),
-    ),
+    COLUMNS.map((column) => formatRowCell(openingRow, column)).join(","),
+    ...state.visibleRows.map((row) => COLUMNS.map((column) => formatRowCell(row, column)).join(",")),
   ];
 
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
