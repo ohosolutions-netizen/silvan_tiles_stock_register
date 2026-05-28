@@ -826,14 +826,50 @@ async function transactionMovements(filters) {
   });
 
   transferOuts.forEach((record) => {
-    if (matchesItem(record, filters, ["Item", "ITEM"]) && matchesWarehouse(record, filters, ["Source Warehouse", "SOURCE WAREHOUSE"])) {
+    if (!matchesWarehouse(record, filters, ["Source_Warehouse", "Source Warehouse", "SOURCE WAREHOUSE"])) return;
+    const date = getDate(record, ["Date_field", "Date", "DATE"]);
+    const billNo = getText(record, ["Branch_Transfer_No", "Branch Transfer No", "BRANCH TRANSFER NO", "Branch Transfer IN Out"]);
+    const destination = getText(record, ["Destination_Warehouse", "Destination Warehouse", "DESTINATION WAREHOUSE"]);
+    const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      lineItems.forEach((lineItem) => {
+        const merged = { ...record, ...lineItem };
+        if (matchesItem(merged, filters, ["Item", "ITEM", "ITEM_NAME", "ITEM NAME"])) {
+          matchedCounts.transferOut++;
+          movements.push(blankMovement({
+            date,
+            billNumber: billNo,
+            party: destination,
+            transOut: getNumber(lineItem, ["Transfer_Quantity", "Transfer Quantity", "TRANSFER QUANTITY", "QUANTITY", "Quantity", "QTY", "Qty"]),
+          }));
+        }
+      });
+    } else if (matchesItem(record, filters, ["Item", "ITEM"])) {
       matchedCounts.transferOut++;
       movements.push(mapTransfer(record, "out"));
     }
   });
 
   transferIns.forEach((record) => {
-    if (matchesItem(record, filters, ["Item", "ITEM"]) && matchesWarehouse(record, filters, ["Destination Warehouse", "DESTINATION WAREHOUSE"])) {
+    if (!matchesWarehouse(record, filters, ["Destination_Warehouse", "Destination Warehouse", "DESTINATION WAREHOUSE"])) return;
+    const date = getDate(record, ["Date_field", "Date", "DATE"]);
+    const billNo = getText(record, ["Branch_Transfer_No", "Branch Transfer No", "BRANCH TRANSFER NO", "Branch Transfer IN Out"]);
+    const source = getText(record, ["Source_Warehouse", "Source Warehouse", "SOURCE WAREHOUSE"]);
+    const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      lineItems.forEach((lineItem) => {
+        const merged = { ...record, ...lineItem };
+        if (matchesItem(merged, filters, ["Item", "ITEM", "ITEM_NAME", "ITEM NAME"])) {
+          matchedCounts.transferIn++;
+          movements.push(blankMovement({
+            date,
+            billNumber: billNo,
+            party: source,
+            transIn: getNumber(lineItem, ["Transfer_Quantity", "Transfer Quantity", "TRANSFER QUANTITY", "QUANTITY", "Quantity", "QTY", "Qty"]),
+          }));
+        }
+      });
+    } else if (matchesItem(record, filters, ["Item", "ITEM"])) {
       matchedCounts.transferIn++;
       movements.push(mapTransfer(record, "in"));
     }
@@ -877,7 +913,27 @@ async function transactionMovements(filters) {
   });
 
   adjustments.forEach((record) => {
-    if (matchesItem(record, filters, ["Item Name", "ITEM NAME"]) && matchesWarehouse(record, filters)) {
+    if (!matchesWarehouse(record, filters, ["Warehouse_ID", "Warehouse ID", "WAREHOUSE", "Warehouse"])) return;
+    const date = getDate(record, ["Date_field", "DATE", "Date"]);
+    const billNo = getText(record, ["Reference_Number", "REFERENCE NUMBER", "Reference Number", "Order_No", "ORDER NO", "SI_No", "SI No", "SI NO"]);
+    const reason = getText(record, ["Reason", "REASON", "Account", "ACCOUNT"]) || "Inventory adjustment";
+    const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      lineItems.forEach((lineItem) => {
+        const merged = { ...record, ...lineItem };
+        if (matchesItem(merged, filters, ["Item_Name", "ITEM_NAME", "Item Name", "ITEM NAME"])) {
+          const quantity = getNumber(lineItem, ["Quantity_Adjusted", "Quantity Adjusted", "QUANTITY ADJUSTED", "Adjusted_Quantity", "Adjusted Quantity"]);
+          matchedCounts.adjustment++;
+          movements.push(blankMovement({
+            date,
+            billNumber: billNo,
+            party: reason,
+            shortage: quantity < 0 ? Math.abs(quantity) : 0,
+            surplus: quantity > 0 ? quantity : 0,
+          }));
+        }
+      });
+    } else if (matchesItem(record, filters, ["Item Name", "ITEM NAME"])) {
       matchedCounts.adjustment++;
       movements.push(mapAdjustment(record));
     }
