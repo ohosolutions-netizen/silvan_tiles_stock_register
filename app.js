@@ -776,14 +776,50 @@ async function transactionMovements(filters) {
   });
 
   creditNotes.forEach((record) => {
-    if (matchesItem(record, filters, ["ITEM CODE", "ITEMCODE", "ITEM NAME"]) && matchesWarehouse(record, filters, ["Warehouse ID", "WAREHOUSE"])) {
+    if (!matchesWarehouse(record, filters, ["Warehouse_ID", "Warehouse ID", "WAREHOUSE", "Warehouse"])) return;
+    const date = getDate(record, ["Date_field", "DATE", "Credit_Date", "Credit Date", "CREDIT DATE", "Date"]);
+    const billNo = getText(record, ["Credit_Note", "Credit Note", "CREDIT NOTE", "Credit_No", "CREDIT NO", "Credit No"]);
+    const customer = getText(record, ["Customer_Name", "CUSTOMER NAME", "Customer Name", "CUSTOMER", "Customer"]);
+    const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      lineItems.forEach((lineItem) => {
+        const merged = { ...record, ...lineItem };
+        if (matchesItem(merged, filters, ["ITEMCODE", "ITEM_NAME", "ITEM CODE", "ITEM NAME"])) {
+          matchedCounts.creditNote++;
+          movements.push(blankMovement({
+            date,
+            billNumber: billNo,
+            party: customer,
+            creditNote: getNumber(lineItem, ["RETURN_QTY", "RETURN QTY", "Return Qty", "QUANTITY", "Quantity", "QTY", "Qty"]),
+          }));
+        }
+      });
+    } else if (matchesItem(record, filters, ["ITEM CODE", "ITEMCODE", "ITEM NAME"])) {
       matchedCounts.creditNote++;
       movements.push(mapCreditNote(record));
     }
   });
 
   vendorCredits.forEach((record) => {
-    if (matchesItem(record, filters, ["ITEMCODE", "ITEM NAME"]) && matchesWarehouse(record, filters, ["Warehouse ID", "WAREHOUSE"])) {
+    if (!matchesWarehouse(record, filters, ["Warehouse_ID", "Warehouse ID", "WAREHOUSE", "Warehouse"])) return;
+    const date = getDate(record, ["Date_field", "DATE", "Vendor_Credit_Date", "Vendor Credit Date", "Date"]);
+    const billNo = getText(record, ["Vendor_Credits", "Vendor Credits", "VENDOR CREDITS", "Previous_Bill_No", "PREVIOUS BILL NO", "Previous Bill No"]);
+    const vendor = getText(record, ["Vendor", "VENDOR", "Supplier", "SUPPLIER"]);
+    const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      lineItems.forEach((lineItem) => {
+        const merged = { ...record, ...lineItem };
+        if (matchesItem(merged, filters, ["ITEMCODE", "ITEM_NAME", "ITEM CODE", "ITEM NAME"])) {
+          matchedCounts.vendorCredit++;
+          movements.push(blankMovement({
+            date,
+            billNumber: billNo,
+            party: vendor,
+            vendorCredit: getNumber(lineItem, ["RETURN_QTY", "RETURN QTY", "Return Qty", "ACTUAL_QTY", "ACTUAL QTY", "Actual Qty", "QUANTITY", "Quantity"]),
+          }));
+        }
+      });
+    } else if (matchesItem(record, filters, ["ITEMCODE", "ITEM NAME"])) {
       matchedCounts.vendorCredit++;
       movements.push(mapVendorCredit(record));
     }
