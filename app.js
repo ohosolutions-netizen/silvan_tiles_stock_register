@@ -625,7 +625,7 @@ async function fetchItems() {
     .map((record) => {
       const code = getText(record, ["ITEMCODE", "ITEM CODE", "Item Code", "Item_Code", "Code"]);
       const name = getText(record, ["ITEM NAME", "Item Name", "Item", "Product Name", "Name"]);
-      const label = combineText(code, name) || fallbackLabel(record) || displayValue(record.ID);
+      const label = combineText(name, code) || fallbackLabel(record) || displayValue(record.ID);
       return {
         value: itemKeyFromRecord(record) || cleanKey(label),
         label,
@@ -709,21 +709,18 @@ function showItemSuggestions() {
   if (!state.mastersLoaded || els.itemSearch.disabled) return;
 
   state.selectedItem = null;
-  // Split the typed text into tokens so multi-word searches like
-  // "granite black" match "GRANITE EXPORT BLACK" (each word must appear,
-  // not necessarily contiguously). v=3100
-  const raw = (els.itemSearch.value || "").trim();
-  const tokens = raw
+  // Split the typed text into tokens. We deliberately KEEP word boundaries
+  // (do NOT call cleanKey) so "test" doesn't accidentally match the substring
+  // inside "ARALDITE STD" (which would otherwise collapse to "aralditestd").
+  const tokens = (els.itemSearch.value || "")
     .toLowerCase()
+    .trim()
     .split(/\s+/)
-    .map((t) => cleanKey(t))
     .filter(Boolean);
   const matches = state.items
     .filter((item) => {
       if (tokens.length === 0) return true;
-      const haystack = cleanKey(
-        `${item.code || ""} ${item.name || ""} ${item.label || ""}`,
-      );
+      const haystack = `${item.code || ""} ${item.name || ""} ${item.label || ""}`.toLowerCase();
       return tokens.every((token) => haystack.includes(token));
     })
     .slice(0, 60);
