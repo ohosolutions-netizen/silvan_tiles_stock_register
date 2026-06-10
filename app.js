@@ -2,7 +2,7 @@ const APP_NAME = "silvan-tiles";
 
 const REPORTS = {
   items: "Item_Report",
-  openings: "API_STOCKS",
+  openings: "All_Stocks",
   warehouses: "Warehouse_Report",
   purchase: "API_PURCHASE_RECEIVE",
   sales: "API_SALES_INVOICES",
@@ -1186,119 +1186,47 @@ async function transactionMovements(filters) {
 }
 
 async function openingStockFromReport(filters) {
-  // Pull opening stock from BOTH reports.
-  //   API_STOCKS — flat report (one row per item+warehouse) with Op_Stock column
-  //   API_OPENING_STOCK — parent records (dated) with a LINE_ITEMS subform where
-  //                       each line carries the item code and Nos quantity
-  //
-  // API_STOCKS is huge (items × warehouses). Use a criteria filter on the
-  // item code so we only pull rows for the selected item (~8 rows).
+  // Opening stock comes from All_Stocks — a flat report (one row per
+  // item+warehouse) where OP_STOCK is the opening quantity in Nos.
+  // We filter to the selected item via the Item.Item_Code lookup criteria
+  // so we only pull ~8 rows (one per warehouse).
   const itemCode = String(filters.itemCode || "").trim();
-  const fetchApiStocks = async () => {
-    if (!itemCode) return creatorGetRecordsSafe(REPORTS.openings);
-    state._stocksCriteria = "";
-    state._stocksAttempts = [];
-    // Expanded list — covers common Zoho field name patterns plus lookup-style
-    // (Item.Item_Code) for forms where Item Code is reached via a lookup
-    const fieldNames = [
-      "Item.Item_Code", "Item_Name.Item_Code", "Item_Master.Item_Code",
-      "Item", "Item_Name", "Item_Code",
-      "ItemCode", "ITEMCODE", "ITEM_CODE", "Code", "ItemRef", "Stock_Item",
-    ];
+  let allOpenings = [];
+  state._stocksCriteria = "";
+  if (itemCode) {
     const codeEscaped = itemCode.replace(/"/g, '\\"');
-    for (const fieldName of fieldNames) {
-      for (const value of [`"${codeEscaped}"`, codeEscaped]) {
-        const criteria = `${fieldName} == ${value}`;
-        try {
-          const r = await creatorGetRecords(REPORTS.openings, { criteria });
-          state._stocksAttempts.push(`${criteria} → ${r.length}`);
-          if (r.length) {
-            state._stocksCriteria = `matched: ${criteria} (${r.length} rows)`;
-            return r;
-          }
-        } catch (e) {
-          state._stocksAttempts.push(`${criteria} → ERR: ${(e?.message || String(e)).slice(0, 80)}`);
-        }
-      }
-    }
-    state._stocksCriteria = `no criteria match for itemCode="${itemCode}"; fetching sample to inspect keys...`;
-    // Inspect actual field names by fetching a tiny sample (no criteria).
     try {
-      const response = await ZOHO.CREATOR.DATA.getRecords({
-        report_name: REPORTS.openings,
-        max_records: 5,
-        field_config: "all",
+      allOpenings = await creatorGetRecords(REPORTS.openings, {
+        criteria: `Item.Item_Code == "${codeEscaped}"`,
       });
-      const responseCode = String(response?.code || "");
-      state._stocksSampleResp = `code=${responseCode} dataLen=${response?.data?.length ?? "?"} msg=${(response?.message || "").slice(0, 100)}`;
-      const sample = response?.data || [];
-      if (sample[0]) {
-        state._stocksFirstKeys = Object.keys(sample[0]).join("|");
-        state._stocksFirstRow = JSON.stringify(sample[0]).slice(0, 600);
-      }
+      state._stocksCriteria = `matched: Item.Item_Code == "${codeEscaped}" (${allOpenings.length} rows)`;
     } catch (e) {
-      state._stocksSampleResp = `EXCEPTION: ${(e?.message || String(e)).slice(0, 150)}`;
+      state._stocksCriteria = `error: ${(e?.message || String(e)).slice(0, 120)}`;
     }
-    return [];
-  };
-
-  const [allOpenings, apiOpenings] = await Promise.all([
-    fetchApiStocks(),
-    creatorGetRecordsSafe(REPORTS.apiOpeningStock),
-  ]);
+  } else {
+    allOpenings = await creatorGetRecordsSafe(REPORTS.openings);
+  }
 
   const itemCandidates = [
     "Item.Item_Code", "Item_Name.Item_Code", "Item",
     "ITEMCODE", "ITEM CODE", "Item_Code", "ITEM_NAME", "ITEM NAME", "Item_Name", "Item Name",
   ];
   const warehouseCandidates = ["Warehouse_ID", "Warehouse ID", "WAREHOUSE", "Warehouse"];
-  // API_STOCKS uses OP_STOCK column (do NOT include "Nos" here — that field
-  // exists in API_STOCKS too and would override).
+  // OP_STOCK is the opening qty column (already in Nos).
   const stocksQtyCandidates = [
     "OP_STOCK", "Op_Stock", "Op Stock", "OP STOCK", "OpStock", "Opening_Stock", "OPENING_STOCK",
   ];
-  // API_OPENING_STOCK subform rows have Nos (the per-line qty)
-  const subformQtyCandidates = [
-    "Nos", "NOS", "Opening_Stock", "OPENING_STOCK", "Opening Stock", "Opening",
-    "QUANTITY", "Quantity", "QTY", "Qty",
-  ];
 
-  // 1) Flat API_STOCKS (one row per item + warehouse with Op_Stock column)
-  if (allOpenings[0]) {
-    state._stocksFirstKeys = Object.keys(allOpenings[0]).join("|");
-    state._stocksFirstRow = JSON.stringify(allOpenings[0]).slice(0, 400);
-  } else {
-    state._stocksFirstKeys = "";
-    state._stocksFirstRow = "";
-  }
-  const allOpeningSum = allOpenings
+  const openingSum = allOpenings
     .filter(
       (record) =>
         matchesItem(record, filters, itemCandidates) &&
         matchesWarehouse(record, filters, warehouseCandidates),
     )
     .reduce((total, record) => total + getNumber(record, stocksQtyCandidates), 0);
-  state._stocksMatchSum = allOpeningSum;
+  state._stocksMatchSum = openingSum;
 
-  // 2) API_OPENING_STOCK with LINE_ITEMS subform — applied unconditionally as
-  // the starting balance (no date filter).
-  let apiOpeningSum = 0;
-  apiOpenings.forEach((record) => {
-    if (!matchesWarehouse(record, filters, warehouseCandidates)) return;
-    const lineItems = getField(record, ["LINE_ITEMS", "Line_Items", "Line Items", "Line Item"]);
-    if (Array.isArray(lineItems) && lineItems.length > 0) {
-      lineItems.forEach((lineItem) => {
-        const merged = { ...record, ...lineItem };
-        if (matchesItem(merged, filters, itemCandidates)) {
-          apiOpeningSum += getNumber(lineItem, subformQtyCandidates);
-        }
-      });
-    } else if (matchesItem(record, filters, itemCandidates)) {
-      apiOpeningSum += getNumber(record, subformQtyCandidates);
-    }
-  });
-
-  return allOpeningSum + apiOpeningSum;
+  return openingSum;
 }
 
 async function loadStockRegister(filters) {
@@ -1314,8 +1242,7 @@ async function loadStockRegister(filters) {
 
   // Diagnostic for the UI
   const firstUnit = movements.find((m) => m.unit)?.unit || "";
-  const attempts = (state._stocksAttempts || []).join("\n    ");
-  const stocksDbg = `\n\nAPI_STOCKS\n  result: ${state._stocksCriteria || "(no fetch)"}\n  matchedSum: ${state._stocksMatchSum ?? 0}\n  sampleResp: ${state._stocksSampleResp || "(none)"}\n  attempts:\n    ${attempts || "(none)"}\n  keys: [${state._stocksFirstKeys || "(empty — 0 rows fetched)"}]\n  row1: ${state._stocksFirstRow || "(empty)"}`;
+  const stocksDbg = `\n\nAll_Stocks: ${state._stocksCriteria || "(no fetch)"} | matchedSum=${state._stocksMatchSum ?? 0}`;
   if (itemMaster) {
     state._itemMasterDebug = `[${state._itemMasterCriteria}] tiles:${itemMaster.tiles} multiUnit:${itemMaster.multiUnit} unitMap:${JSON.stringify(itemMaster.unitMap)} firstUnit:"${firstUnit}" keys:[${state._itemMasterKeys}] tilesInfo:${state._tilesInfoRaw}${stocksDbg}`;
   } else {
