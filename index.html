@@ -7,7 +7,7 @@
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
     <title>Stock Register Widget</title>
-    <link rel="stylesheet" href="styles.css?v=20260528-3100" />
+    <link rel="stylesheet" href="styles.css?v=20260528-4900" />
   </head>
   <body>
     <div id="loadingOverlay" class="loading-overlay" hidden>
@@ -22,7 +22,7 @@
 
       <header class="topbar">
         <div>
-          <h1>Stock Register <span class="version-tag" id="versionTag">v4500</span></h1>
+          <h1>Stock Register <span class="version-tag" id="versionTag">v4900</span></h1>
           <p>Item-wise movement ledger with opening stock and running balance.</p>
         </div>
         <button class="secondary-button" id="exportButton" type="button" title="Download the current register as a CSV file">
@@ -76,7 +76,10 @@
             <h2>Movement Details</h2>
             <p id="rangeLabel">Showing sample register rows</p>
           </div>
-          <span class="status-pill" id="rowCount">0 rows</span>
+          <div class="panel-head-tags">
+            <span class="status-pill box-pill" id="boxSizePill" hidden></span>
+            <span class="status-pill" id="rowCount">0 rows</span>
+          </div>
         </div>
 
         <div class="table-wrap">
@@ -108,21 +111,25 @@
         <article>
           <span>Opening Stock</span>
           <strong id="openingStock">0</strong>
+          <em class="box-breakdown" id="openingStockBox" hidden></em>
           <small>Previous day closing</small>
         </article>
         <article>
           <span>Total Inward</span>
           <strong id="totalInward">0</strong>
+          <em class="box-breakdown" id="totalInwardBox" hidden></em>
           <small>Purchase, credit, transfer, reprocess, surplus</small>
         </article>
         <article>
           <span>Total Outward</span>
           <strong id="totalOutward">0</strong>
+          <em class="box-breakdown" id="totalOutwardBox" hidden></em>
           <small>Sales, vendor credit, transfer, reprocess, shortage</small>
         </article>
         <article>
           <span>Closing Balance</span>
           <strong id="closingBalance">0</strong>
+          <em class="box-breakdown" id="closingBalanceBox" hidden></em>
           <small>As of selected to date</small>
         </article>
       </section>
@@ -153,6 +160,6 @@
     </main>
 
     <script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
-    <script src="app.js?v=20260528-4500"></script>
+    <script src="app.js?v=20260528-4900"></script>
   </body>
 </html>

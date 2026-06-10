@@ -268,6 +268,23 @@ input:disabled {
   font-weight: 760;
 }
 
+.summary-grid .box-breakdown {
+  background: var(--accent-soft);
+  border-radius: 6px;
+  color: var(--accent-dark);
+  display: inline-block;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding: 3px 8px;
+  width: max-content;
+}
+
+.summary-grid .box-breakdown[hidden] {
+  display: none;
+}
+
 .register-panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -295,6 +312,23 @@ input:disabled {
   font-weight: 760;
   padding: 6px 10px;
   white-space: nowrap;
+}
+
+.status-pill[hidden] {
+  display: none;
+}
+
+.panel-head-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.status-pill.box-pill {
+  background: var(--warning-soft);
+  border-color: #f0d791;
+  color: var(--warning);
 }
 
 .table-wrap {
@@ -370,6 +404,17 @@ tbody tr:hover {
 td.balance {
   color: var(--accent-dark);
   font-weight: 800;
+}
+
+.box-inline {
+  background: var(--warning-soft);
+  border-radius: 3px;
+  color: var(--warning);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  margin-left: 6px;
+  padding: 1px 4px;
 }
 
 td.zero {

@@ -71,7 +71,38 @@ const els = {
   diagApiRows: document.querySelector("#diagApiRows"),
   diagMatched: document.querySelector("#diagMatched"),
   diagMaster: document.querySelector("#diagMaster"),
+  openingStockBox: document.querySelector("#openingStockBox"),
+  totalInwardBox: document.querySelector("#totalInwardBox"),
+  totalOutwardBox: document.querySelector("#totalOutwardBox"),
+  closingBalanceBox: document.querySelector("#closingBalanceBox"),
+  boxSizePill: document.querySelector("#boxSizePill"),
 };
+
+// Format a Nos value as "<X> Box + <Y> Nos = <Z> Nos" when the item is a tile
+// with a per-box Nos count. Returns "" if the breakdown shouldn't be shown.
+function formatBoxBreakdown(valueInNos, boxSize) {
+  if (!boxSize || boxSize <= 0) return "";
+  const sign = valueInNos < 0 ? "-" : "";
+  const abs = Math.abs(Number(valueInNos) || 0);
+  const boxes = Math.floor(abs / boxSize);
+  const remainder = abs - boxes * boxSize;
+  const boxLabel = `${sign}${boxes} ${boxes === 1 ? "Box" : "Boxes"}`;
+  const remLabel = `${formatQty(remainder)} Nos`;
+  const totalLabel = `${formatQty(valueInNos)} Nos total`;
+  return `${boxLabel} + ${remLabel} (${totalLabel})`;
+}
+
+function setBoxBreakdown(element, valueInNos, boxSize) {
+  if (!element) return;
+  const text = formatBoxBreakdown(valueInNos, boxSize);
+  if (text) {
+    element.textContent = text;
+    element.hidden = false;
+  } else {
+    element.textContent = "";
+    element.hidden = true;
+  }
+}
 
 function renderDevDiagnostics({ counts, matchedCounts, masterDebug }) {
   if (!els.devDiagnostics) return;
@@ -1257,11 +1288,18 @@ async function loadStockRegister(filters) {
 
   const openingStock = calculateRows(financialYearOpening, beforeFromDate).at(-1)?.balance ?? financialYearOpening;
 
+  // Box size = Nos per Box for tiles items (only when Multi Unit is also on)
+  const boxSize =
+    itemMaster && itemMaster.tiles && itemMaster.multiUnit && itemMaster.unitMap?.box > 0
+      ? itemMaster.unitMap.box
+      : 0;
+
   return {
     openingStock,
     rows: calculateRows(openingStock, selectedRange),
     counts,
     matchedCounts,
+    boxSize,
   };
 }
 
@@ -1278,7 +1316,7 @@ function loadSampleStockRegister(filters) {
   };
 }
 
-function renderTable(rows, openingStock) {
+function renderTable(rows, openingStock, boxSize = 0) {
   const openingRow = {
     date: els.fromDate.value,
     billNumber: "Opening",
@@ -1297,11 +1335,25 @@ function renderTable(rows, openingStock) {
     balance: openingStock,
   };
 
+  // For tile items with a Box unit, build a compact "<B>B+<N>N" suffix for
+  // the Balance cell so each row makes the breakdown visible inline.
+  const balanceBoxSuffix = (numericValue) => {
+    if (!boxSize || boxSize <= 0) return "";
+    const abs = Math.abs(Number(numericValue) || 0);
+    if (abs === 0) return "";
+    const boxes = Math.floor(abs / boxSize);
+    const remainder = abs - boxes * boxSize;
+    if (boxes === 0) return "";
+    const sign = numericValue < 0 ? "-" : "";
+    return `<span class="box-inline">${sign}${boxes}B+${formatQty(remainder)}N</span>`;
+  };
+
   els.registerBody.innerHTML = [openingRow, ...rows]
     .map((row, rowIndex) => {
       const className = rowIndex === 0 ? " class=\"op-row\"" : "";
       const cells = COLUMNS.map((column) => {
-        let value = row[column];
+        const rawValue = row[column];
+        let value = rawValue;
         if (column === "date") value = formatDate(value);
         if (typeof value === "number") value = formatQty(value);
 
@@ -1312,7 +1364,11 @@ function renderTable(rows, openingStock) {
           .filter(Boolean)
           .join(" ");
 
-        return `<td${tdClass ? ` class="${tdClass}"` : ""}>${value ?? ""}</td>`;
+        let cellContent = value ?? "";
+        if (column === "balance" && typeof rawValue === "number") {
+          cellContent = `${value}${balanceBoxSuffix(rawValue)}`;
+        }
+        return `<td${tdClass ? ` class="${tdClass}"` : ""}>${cellContent}</td>`;
       }).join("");
       return `<tr${className}>${cells}</tr>`;
     })
@@ -1326,7 +1382,7 @@ function renderEmptyRegister(message) {
   setStatus(message);
 }
 
-function renderSummary(openingStock, rows) {
+function renderSummary(openingStock, rows, boxSize = 0) {
   const totals = rows.reduce(
     (acc, row) => {
       acc.inward += movementIn(row);
@@ -1342,6 +1398,21 @@ function renderSummary(openingStock, rows) {
   els.totalInward.textContent = formatQty(totals.inward);
   els.totalOutward.textContent = formatQty(totals.outward);
   els.closingBalance.textContent = formatQty(closing);
+
+  setBoxBreakdown(els.openingStockBox, openingStock, boxSize);
+  setBoxBreakdown(els.totalInwardBox, totals.inward, boxSize);
+  setBoxBreakdown(els.totalOutwardBox, totals.outward, boxSize);
+  setBoxBreakdown(els.closingBalanceBox, closing, boxSize);
+
+  if (els.boxSizePill) {
+    if (boxSize > 0) {
+      els.boxSizePill.textContent = `1 Box = ${formatQty(boxSize)} Nos`;
+      els.boxSizePill.hidden = false;
+    } else {
+      els.boxSizePill.hidden = true;
+    }
+  }
+
   els.rowCount.textContent = `${rows.length} ${rows.length === 1 ? "row" : "rows"}`;
   els.rangeLabel.textContent = `${els.itemSearch.value || "All items"} in ${els.warehouseSelect.selectedOptions[0]?.text || "All warehouses"}, ${formatDate(els.fromDate.value)} to ${formatDate(els.toDate.value)}`;
 }
@@ -1389,8 +1460,9 @@ async function applyFilters() {
     const result = await loadStockRegister(filters);
     state.visibleRows = result.rows;
     state.openingStockValue = result.openingStock;
-    renderSummary(result.openingStock, result.rows);
-    renderTable(result.rows, result.openingStock);
+    state.boxSize = result.boxSize || 0;
+    renderSummary(result.openingStock, result.rows, state.boxSize);
+    renderTable(result.rows, result.openingStock, state.boxSize);
     const masterStatus = state.creatorReady
       ? `Loaded ${state.itemCount} item options and ${state.warehouseCount} warehouse options.`
       : "Local preview mode.";
