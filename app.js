@@ -979,17 +979,25 @@ function mapAdjustment(record) {
   });
 }
 
+function omitByStatus(records, fieldCandidates, omitValue) {
+  const target = String(omitValue).trim().toLowerCase();
+  return records.filter((record) => {
+    const status = String(getText(record, fieldCandidates) || "").trim().toLowerCase();
+    return status !== target;
+  });
+}
+
 async function transactionMovements(filters) {
   const [
-    purchases,
+    rawPurchases,
     sales,
-    creditNotes,
-    vendorCredits,
-    transferOuts,
-    transferIns,
+    rawCreditNotes,
+    rawVendorCredits,
+    rawTransferOuts,
+    rawTransferIns,
     reprocessRows,
     reprocessLineItems,
-    adjustments,
+    rawAdjustments,
   ] = await Promise.all([
     creatorGetRecordsSafe(REPORTS.purchase),
     creatorGetRecordsSafe(REPORTS.sales),
@@ -1001,6 +1009,14 @@ async function transactionMovements(filters) {
     creatorGetRecordsSafe(REPORTS.reprocessLineItem),
     creatorGetRecordsSafe(REPORTS.adjustment),
   ]);
+
+  // Filter out voided / pending records before any matching.
+  const purchases = omitByStatus(rawPurchases, ["POR_Status", "POR Status"], "Void");
+  const creditNotes = omitByStatus(rawCreditNotes, ["Credit_Note_Status", "Credit Note Status"], "Void");
+  const vendorCredits = omitByStatus(rawVendorCredits, ["Vendor_Credit_Status", "Vendor Credit Status"], "Void");
+  const transferOuts = omitByStatus(rawTransferOuts, ["Status"], "Void");
+  const transferIns = omitByStatus(rawTransferIns, ["Status"], "Void");
+  const adjustments = omitByStatus(rawAdjustments, ["Status"], "Pending");
 
   // Field name aliases discovered from the API:
   //   Date_field (not Date/DATE), ORDER_NO (with underscore), LINE_ITEMS (the subform),
