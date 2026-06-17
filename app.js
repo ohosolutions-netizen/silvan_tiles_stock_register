@@ -76,7 +76,26 @@ const els = {
   totalOutwardBox: document.querySelector("#totalOutwardBox"),
   closingBalanceBox: document.querySelector("#closingBalanceBox"),
   boxSizePill: document.querySelector("#boxSizePill"),
+  unitPcsButton: document.querySelector("#unitPcsButton"),
+  unitBoxesButton: document.querySelector("#unitBoxesButton"),
 };
+
+// Format a Nos value in the currently selected display unit.
+// "pcs"   → integer Nos (current default formatting)
+// "boxes" → value ÷ boxSize, up to 2 decimals; falls back to Nos when boxSize unknown
+function formatQtyForUnit(valueInNos, boxSize) {
+  const unit = state.displayUnit || "pcs";
+  if (unit === "boxes" && boxSize > 0) {
+    const sign = valueInNos < 0 ? "-" : "";
+    const abs = Math.abs(Number(valueInNos) || 0);
+    const boxes = Math.floor(abs / boxSize);
+    const remainder = abs - boxes * boxSize;
+    // Whole boxes → just the box count; otherwise show "boxes+pcs"
+    if (remainder === 0) return `${sign}${formatQty(boxes)}`;
+    return `${sign}${formatQty(boxes)}+${formatQty(remainder)}`;
+  }
+  return formatQty(valueInNos);
+}
 
 // Format a Nos value as "<X> Box + <Y> Nos = <Z> Nos" when the item is a tile
 // with a per-box Nos count. Returns "" if the breakdown shouldn't be shown.
@@ -90,6 +109,34 @@ function formatBoxBreakdown(valueInNos, boxSize) {
   const remLabel = `${formatQty(remainder)} Nos`;
   const totalLabel = `${formatQty(valueInNos)} Nos total`;
   return `${boxLabel} + ${remLabel} (${totalLabel})`;
+}
+
+function syncUnitToggle() {
+  const boxSize = Number(state.boxSize || 0);
+  const boxesEnabled = boxSize > 0;
+  if (els.unitBoxesButton) {
+    els.unitBoxesButton.disabled = !boxesEnabled;
+    if (!boxesEnabled && state.displayUnit === "boxes") {
+      state.displayUnit = "pcs";
+    }
+  }
+  if (els.unitPcsButton) {
+    els.unitPcsButton.classList.toggle("is-active", state.displayUnit !== "boxes");
+  }
+  if (els.unitBoxesButton) {
+    els.unitBoxesButton.classList.toggle("is-active", state.displayUnit === "boxes");
+  }
+}
+
+function setDisplayUnit(unit) {
+  if (unit === "boxes" && !(state.boxSize > 0)) return;
+  state.displayUnit = unit;
+  syncUnitToggle();
+  // Re-render the last computed result with the new unit
+  if (state.openingStockValue != null && Array.isArray(state.visibleRows)) {
+    renderSummary(state.openingStockValue, state.visibleRows, state.boxSize);
+    renderTable(state.visibleRows, state.openingStockValue, state.boxSize);
+  }
 }
 
 function setBoxBreakdown(element, valueInNos, boxSize) {
@@ -321,10 +368,11 @@ function getDate(record, candidates) {
 
 function formatDate(value) {
   if (!value) return "";
-  return new Intl.DateTimeFormat("en-IN", {
+  // dd/mm/yy
+  return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
-    month: "short",
-    year: "numeric",
+    month: "2-digit",
+    year: "2-digit",
   }).format(new Date(`${value}T00:00:00`));
 }
 
@@ -675,7 +723,8 @@ async function fetchWarehouses() {
     .map((record) => {
       const code = getText(record, ["WAREHOUSE CODE", "Warehouse Code", "Code"]);
       const name = getText(record, ["WAREHOUSE", "Warehouse", "WAREHOUSE NAME", "Warehouse Name", "Name"]);
-      const label = combineText(code, name) || fallbackLabel(record) || displayValue(record.ID);
+      // Show just the name (drop the "<code> - " prefix); keep value unique using code+name.
+      const label = name || combineText(code, name) || fallbackLabel(record) || displayValue(record.ID);
       return {
         value: cleanKey(combineText(code, name) || name || code || label),
         label,
@@ -684,7 +733,13 @@ async function fetchWarehouses() {
       };
     })
     .filter((warehouse) => warehouse.label)
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort((a, b) => {
+      const aKanji = a.label.toLowerCase().includes("kanjipura");
+      const bKanji = b.label.toLowerCase().includes("kanjipura");
+      if (aKanji && !bKanji) return -1;
+      if (!aKanji && bKanji) return 1;
+      return a.label.localeCompare(b.label);
+    });
 }
 
 function escapeHtml(value) {
@@ -815,9 +870,12 @@ async function loadMasters() {
     state.mastersLoaded = true;
     renderItemOptions(items);
     renderOptions(els.warehouseSelect, warehouses, "Select warehouse");
+    // Default warehouse to Kanjipura Malappuram if present.
+    const kanjipura = warehouses.find((w) => w.label.toLowerCase().includes("kanjipura"));
+    if (kanjipura) els.warehouseSelect.value = kanjipura.value;
     setMasterDependentControls(true);
     els.loadMastersButton.textContent = "Masters Loaded";
-    els.loadStatus.textContent = `Loaded ${items.length} item options and ${warehouses.length} warehouse options. Select an item and warehouse, then click Apply.`;
+    els.loadStatus.textContent = "";
   } catch (error) {
     const detail = error?.message || JSON.stringify(error) || String(error);
     state.mastersLoaded = false;
@@ -1355,7 +1413,7 @@ function renderTable(rows, openingStock, boxSize = 0) {
         const rawValue = row[column];
         let value = rawValue;
         if (column === "date") value = formatDate(value);
-        if (typeof value === "number") value = formatQty(value);
+        if (typeof value === "number") value = formatQtyForUnit(value, boxSize);
 
         const tdClass = [
           column === "balance" ? "balance" : "",
@@ -1366,7 +1424,10 @@ function renderTable(rows, openingStock, boxSize = 0) {
 
         let cellContent = value ?? "";
         if (column === "balance" && typeof rawValue === "number") {
-          cellContent = `${value}${balanceBoxSuffix(rawValue)}`;
+          // Show the box breakdown chip only in Pcs mode (in Boxes mode the
+          // value is already expressed in boxes).
+          const suffix = state.displayUnit === "boxes" ? "" : balanceBoxSuffix(rawValue);
+          cellContent = `${value}${suffix}`;
         }
         return `<td${tdClass ? ` class="${tdClass}"` : ""}>${cellContent}</td>`;
       }).join("");
@@ -1394,15 +1455,18 @@ function renderSummary(openingStock, rows, boxSize = 0) {
 
   const closing = rows.length ? rows[rows.length - 1].balance : openingStock;
 
-  els.openingStock.textContent = formatQty(openingStock);
-  els.totalInward.textContent = formatQty(totals.inward);
-  els.totalOutward.textContent = formatQty(totals.outward);
-  els.closingBalance.textContent = formatQty(closing);
+  els.openingStock.textContent = formatQtyForUnit(openingStock, boxSize);
+  els.totalInward.textContent = formatQtyForUnit(totals.inward, boxSize);
+  els.totalOutward.textContent = formatQtyForUnit(totals.outward, boxSize);
+  els.closingBalance.textContent = formatQtyForUnit(closing, boxSize);
 
-  setBoxBreakdown(els.openingStockBox, openingStock, boxSize);
-  setBoxBreakdown(els.totalInwardBox, totals.inward, boxSize);
-  setBoxBreakdown(els.totalOutwardBox, totals.outward, boxSize);
-  setBoxBreakdown(els.closingBalanceBox, closing, boxSize);
+  // In Boxes mode the main number already shows the "B+P" breakdown,
+  // so the badge would be redundant.
+  const showBadges = state.displayUnit !== "boxes";
+  setBoxBreakdown(els.openingStockBox, showBadges ? openingStock : null, showBadges ? boxSize : 0);
+  setBoxBreakdown(els.totalInwardBox, showBadges ? totals.inward : null, showBadges ? boxSize : 0);
+  setBoxBreakdown(els.totalOutwardBox, showBadges ? totals.outward : null, showBadges ? boxSize : 0);
+  setBoxBreakdown(els.closingBalanceBox, showBadges ? closing : null, showBadges ? boxSize : 0);
 
   if (els.boxSizePill) {
     if (boxSize > 0) {
@@ -1414,7 +1478,7 @@ function renderSummary(openingStock, rows, boxSize = 0) {
   }
 
   els.rowCount.textContent = `${rows.length} ${rows.length === 1 ? "row" : "rows"}`;
-  els.rangeLabel.textContent = `${els.itemSearch.value || "All items"} in ${els.warehouseSelect.selectedOptions[0]?.text || "All warehouses"}, ${formatDate(els.fromDate.value)} to ${formatDate(els.toDate.value)}`;
+  els.rangeLabel.textContent = "";
 }
 
 function setStatus(message) {
@@ -1461,6 +1525,7 @@ async function applyFilters() {
     state.visibleRows = result.rows;
     state.openingStockValue = result.openingStock;
     state.boxSize = result.boxSize || 0;
+    syncUnitToggle();
     renderSummary(result.openingStock, result.rows, state.boxSize);
     renderTable(result.rows, result.openingStock, state.boxSize);
     const masterStatus = state.creatorReady
@@ -1472,9 +1537,9 @@ async function applyFilters() {
       masterDebug: state._itemMasterDebug,
     });
     if (state.warnings.length) {
-      els.loadStatus.textContent = `${masterStatus} Register loaded with ${state.warnings.length} warning(s): ${state.warnings.slice(0, 2).join(" | ")}`;
+      els.loadStatus.textContent = `${state.warnings.length} warning(s): ${state.warnings.slice(0, 2).join(" | ")}`;
     } else {
-      els.loadStatus.textContent = `${masterStatus} Register loaded.`;
+      els.loadStatus.textContent = "";
     }
   } catch (error) {
     console.error(error);
@@ -1537,8 +1602,10 @@ function exportCsv() {
 
 function setDefaultDates() {
   const today = new Date();
-  const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-  els.fromDate.value = dateInputValue(firstDay);
+  // Indian FY runs April → March. Pick April 1 of the current FY.
+  const fyYear = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1;
+  const fyStart = new Date(fyYear, 3, 1); // month index 3 = April
+  els.fromDate.value = dateInputValue(fyStart);
   els.toDate.value = dateInputValue(today);
 }
 
@@ -1547,6 +1614,10 @@ async function boot() {
   els.applyButton.addEventListener("click", applyFilters);
   els.exportButton.addEventListener("click", exportCsv);
   els.loadMastersButton.addEventListener("click", loadMasters);
+  els.unitPcsButton?.addEventListener("click", () => setDisplayUnit("pcs"));
+  els.unitBoxesButton?.addEventListener("click", () => setDisplayUnit("boxes"));
+  state.displayUnit = "pcs";
+  syncUnitToggle();
   els.itemSearch.addEventListener("input", showItemSuggestions);
   els.itemSearch.addEventListener("focus", showItemSuggestions);
   document.addEventListener("click", (event) => {

@@ -7,7 +7,7 @@
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
     <title>Stock Register Widget</title>
-    <link rel="stylesheet" href="styles.css?v=20260528-4900" />
+    <link rel="stylesheet" href="styles.css?v=20260528-5200" />
   </head>
   <body>
     <div id="loadingOverlay" class="loading-overlay" hidden>
@@ -22,8 +22,7 @@
 
       <header class="topbar">
         <div>
-          <h1>Stock Register <span class="version-tag" id="versionTag">v4900</span></h1>
-          <p>Item-wise movement ledger with opening stock and running balance.</p>
+          <h1>Stock Register <span class="version-tag" id="versionTag">v5400</span></h1>
         </div>
         <button class="secondary-button" id="exportButton" type="button" title="Download the current register as a CSV file">
           Download CSV
@@ -77,6 +76,11 @@
             <p id="rangeLabel">Showing sample register rows</p>
           </div>
           <div class="panel-head-tags">
+            <div class="unit-toggle" role="group" aria-label="Quantity display unit" id="unitToggle">
+              <span class="unit-toggle-label">Show qty in</span>
+              <button class="unit-toggle-btn is-active" type="button" id="unitPcsButton" data-unit="pcs">Pcs</button>
+              <button class="unit-toggle-btn" type="button" id="unitBoxesButton" data-unit="boxes" disabled title="Available for tile items only">Boxes</button>
+            </div>
             <span class="status-pill box-pill" id="boxSizePill" hidden></span>
             <span class="status-pill" id="rowCount">0 rows</span>
           </div>
@@ -134,32 +138,9 @@
         </article>
       </section>
 
-      <section class="dev-diagnostics" id="devDiagnostics" hidden>
-        <header class="dev-diag-header">
-          <span class="dev-diag-badge">DEV</span>
-          <div class="dev-diag-titles">
-            <h3>Session Diagnostics</h3>
-            <span class="dev-diag-sub">Internal counters and lookups — not part of the user-facing register</span>
-          </div>
-        </header>
-        <div class="dev-diag-grid">
-          <article class="dev-diag-card">
-            <h4>API rows fetched</h4>
-            <dl id="diagApiRows"></dl>
-          </article>
-          <article class="dev-diag-card">
-            <h4>Matched (item + warehouse)</h4>
-            <dl id="diagMatched"></dl>
-          </article>
-          <article class="dev-diag-card dev-diag-card--wide">
-            <h4>Item master lookup</h4>
-            <pre id="diagMaster">(not yet loaded)</pre>
-          </article>
-        </div>
-      </section>
     </main>
 
     <script src="https://static.zohocdn.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
-    <script src="app.js?v=20260528-4900"></script>
+    <script src="app.js?v=20260528-5400"></script>
   </body>
 </html>
