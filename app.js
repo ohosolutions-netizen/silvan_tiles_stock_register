@@ -15,7 +15,10 @@ const REPORTS = {
   adjustment: "API_INVENTORY_ADJUSTMENT",
   itemMaster: "API_ITEM_MASTER",
   apiOpeningStock: "API_OPENING_STOCK",
+  employees: "All_Employees",
 };
+
+const SUPER_ADMIN_EMAIL = "hidesigntiles@gmail.com";
 
 const COLUMNS = [
   "date",
@@ -211,6 +214,8 @@ const state = {
   warehouseCount: 0,
   mastersLoaded: false,
   selectedItem: null,
+  currentUser: null,
+  warehouseLocked: false,
 };
 
 function withTimeout(promise, timeoutMs, message) {
@@ -730,6 +735,7 @@ async function fetchWarehouses() {
         label,
         code,
         name,
+        id: String(record.ID || record.ID1 || record.ID_ || "").trim(),
       };
     })
     .filter((warehouse) => warehouse.label)
@@ -832,8 +838,53 @@ function showItemSuggestions() {
 
 function setMasterDependentControls(enabled) {
   els.itemSearch.disabled = !enabled;
-  els.warehouseSelect.disabled = !enabled;
+  // If the current user is restricted to a single branch, keep the warehouse
+  // dropdown disabled even when other controls become enabled.
+  els.warehouseSelect.disabled = !enabled || state.warehouseLocked;
   els.applyButton.disabled = !enabled;
+}
+
+async function getCurrentUserEmail() {
+  if (state.currentUser) return state.currentUser;
+  if (!state.creatorReady) return null;
+  try {
+    if (window.ZOHO?.CREATOR?.UTIL?.getInitParams) {
+      const params = await ZOHO.CREATOR.UTIL.getInitParams();
+      const email = params?.loginUser || null;
+      if (email) state.currentUser = String(email).trim();
+      return state.currentUser;
+    }
+  } catch (error) {
+    console.error("[StockReg] getInitParams failed:", error);
+  }
+  return null;
+}
+
+async function fetchUserBranch(email) {
+  if (!email || !state.creatorReady) return null;
+  const emailEsc = String(email).replace(/"/g, '\\"');
+  // Try common field names for the email column on the employee record
+  for (const fieldName of ["Email", "Email_ID", "EmailID", "Email_Address", "email"]) {
+    try {
+      const records = await creatorGetRecords(REPORTS.employees, {
+        criteria: `${fieldName} == "${emailEsc}"`,
+      });
+      if (!records.length) continue;
+      // Branch is a lookup — return both its ID (reliable match) and name.
+      const branchField = getField(records[0], [
+        "Branch", "Warehouse", "Assigned_Branch", "Assigned_Warehouse",
+        "BRANCH", "WAREHOUSE", "Home_Branch", "Home_Warehouse",
+      ]);
+      const isObj = branchField && typeof branchField === "object" && !Array.isArray(branchField);
+      const id = isObj ? String(branchField.ID || "").trim() : "";
+      const name = String(displayValue(branchField) || "").trim();
+      if (!id && !name) return null;
+      return { id, name };
+    } catch (e) {
+      // field name doesn't exist — try next
+    }
+  }
+  return null;
 }
 
 async function loadMasters() {
@@ -869,10 +920,48 @@ async function loadMasters() {
     state.warehouseCount = warehouses.length;
     state.mastersLoaded = true;
     renderItemOptions(items);
-    renderOptions(els.warehouseSelect, warehouses, "Select warehouse");
-    // Default warehouse to Kanjipura Malappuram if present.
-    const kanjipura = warehouses.find((w) => w.label.toLowerCase().includes("kanjipura"));
-    if (kanjipura) els.warehouseSelect.value = kanjipura.value;
+
+    // Determine current user and, for non-super-admins, restrict the
+    // warehouse dropdown to their assigned branch.
+    state.warehouseLocked = false;
+    let visibleWarehouses = warehouses;
+    const currentUser = await getCurrentUserEmail();
+    const isSuperAdmin =
+      currentUser && currentUser.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
+    if (currentUser && !isSuperAdmin) {
+      const userBranch = await fetchUserBranch(currentUser);
+      if (userBranch && (userBranch.id || userBranch.name)) {
+        // Prefer matching by lookup ID (reliable); fall back to name.
+        let matched = userBranch.id
+          ? warehouses.filter((w) => w.id && w.id === userBranch.id)
+          : [];
+        if (!matched.length && userBranch.name) {
+          const branchKey = cleanKey(userBranch.name);
+          matched = warehouses.filter((w) => {
+            const whKey = cleanKey(w.name || w.label);
+            return whKey.includes(branchKey) || branchKey.includes(whKey);
+          });
+        }
+        if (matched.length) {
+          visibleWarehouses = matched;
+          state.warehouseLocked = true;
+        }
+      }
+    }
+    state.warehouses = visibleWarehouses;
+    state.warehouseCount = visibleWarehouses.length;
+    renderOptions(els.warehouseSelect, visibleWarehouses, "Select warehouse");
+
+    if (state.warehouseLocked && visibleWarehouses[0]) {
+      // Restricted user — auto-select their only branch
+      els.warehouseSelect.value = visibleWarehouses[0].value;
+    } else {
+      // Super admin / fallback — default to Kanjipura Malappuram if present
+      const kanjipura = visibleWarehouses.find((w) =>
+        w.label.toLowerCase().includes("kanjipura"),
+      );
+      if (kanjipura) els.warehouseSelect.value = kanjipura.value;
+    }
     setMasterDependentControls(true);
     els.loadMastersButton.textContent = "Masters Loaded";
     els.loadStatus.textContent = "";
