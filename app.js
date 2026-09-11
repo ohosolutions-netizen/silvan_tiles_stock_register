@@ -854,6 +854,37 @@ function getUrlParam(name) {
   }
 }
 
+// Zoho Creator page params (from the parent page URL that embeds this widget)
+// travel through the SDK, not through window.location. Cache after first call.
+async function getPageParam(name) {
+  // Fast path: direct URL param on the widget itself
+  const direct = getUrlParam(name);
+  if (direct) return direct;
+  if (state._pageParams === undefined) {
+    state._pageParams = null;
+    if (state.creatorReady && window.ZOHO?.CREATOR?.UTIL?.getInitParams) {
+      try {
+        const params = await ZOHO.CREATOR.UTIL.getInitParams();
+        // Different SDK versions expose the page params under different keys.
+        state._pageParams =
+          params?.queryParams ||
+          params?.query_params ||
+          params?.pageParams ||
+          params?.page_params ||
+          params?.params ||
+          params || null;
+      } catch (e) {
+        state._pageParams = null;
+      }
+    }
+  }
+  const bag = state._pageParams;
+  if (bag && typeof bag === "object") {
+    return bag[name] || bag[name.toUpperCase()] || bag[name.toLowerCase()] || null;
+  }
+  return null;
+}
+
 async function getCurrentUserEmail() {
   if (state.currentUser) return state.currentUser;
   if (!state.creatorReady) return null;
@@ -976,7 +1007,7 @@ async function loadMasters() {
     // If page URL carries ?item_code=<code>, auto-select that item and lock
     // the search box. User only has to touch the warehouse (or accept the
     // auto-selected one), and results load automatically.
-    const urlItemCode = getUrlParam("item_code");
+    const urlItemCode = await getPageParam("item_code");
     if (urlItemCode) {
       const wanted = cleanKey(urlItemCode);
       const item = state.items.find((it) => cleanKey(it.code) === wanted);
@@ -1789,6 +1820,12 @@ async function boot() {
 
   if (state.creatorReady) {
     renderEmptyRegister("Click Load Masters to load item and warehouse options.");
+    // If a page parameter like ?item_code=<code> was passed to the widget,
+    // auto-trigger masters loading so the user doesn't have to click.
+    const autoItemCode = await getPageParam("item_code");
+    if (autoItemCode) {
+      loadMasters();
+    }
   } else {
     await applyFilters();
   }
