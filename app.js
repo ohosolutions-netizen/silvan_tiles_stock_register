@@ -854,30 +854,45 @@ function getUrlParam(name) {
   }
 }
 
-// Zoho Creator page params (from the parent page URL that embeds this widget)
-// travel through the SDK, not through window.location. Cache after first call.
+// For a widget embedded in a Zoho Creator Page, the parent Page's URL params
+// are only reachable through the Creator JS SDK — never through
+// window.location (the widget iframe is served from Vercel, not the Creator
+// domain). ZOHO.CREATOR.PAGE.getPageParams() is the documented entry point.
 async function getPageParam(name) {
-  // Fast path: direct URL param on the widget itself
+  // Local dev fast path: direct query on the widget URL itself
   const direct = getUrlParam(name);
   if (direct) return direct;
+
   if (state._pageParams === undefined) {
     state._pageParams = null;
-    if (state.creatorReady && window.ZOHO?.CREATOR?.UTIL?.getInitParams) {
+    if (state.creatorReady) {
       try {
-        const params = await ZOHO.CREATOR.UTIL.getInitParams();
-        // Different SDK versions expose the page params under different keys.
-        state._pageParams =
-          params?.queryParams ||
-          params?.query_params ||
-          params?.pageParams ||
-          params?.page_params ||
-          params?.params ||
-          params || null;
+        // Primary source: Zoho Creator Page params SDK
+        if (window.ZOHO?.CREATOR?.PAGE?.getPageParams) {
+          const response = await ZOHO.CREATOR.PAGE.getPageParams();
+          state._pageParams =
+            response?.data ||
+            response?.parameters ||
+            response?.pageParams ||
+            response || null;
+        }
+        // Fallback: some SDK builds still expose params via UTIL.getInitParams
+        if (!state._pageParams && window.ZOHO?.CREATOR?.UTIL?.getInitParams) {
+          const params = await ZOHO.CREATOR.UTIL.getInitParams();
+          state._pageParams =
+            params?.queryParams ||
+            params?.query_params ||
+            params?.pageParams ||
+            params?.page_params ||
+            params?.params ||
+            params || null;
+        }
       } catch (e) {
         state._pageParams = null;
       }
     }
   }
+
   const bag = state._pageParams;
   if (bag && typeof bag === "object") {
     return bag[name] || bag[name.toUpperCase()] || bag[name.toLowerCase()] || null;
