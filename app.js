@@ -854,49 +854,74 @@ function getUrlParam(name) {
   }
 }
 
-// For a widget embedded in a Zoho Creator Page, the parent Page's URL params
-// are only reachable through the Creator JS SDK — never through
-// window.location (the widget iframe is served from Vercel, not the Creator
-// domain). ZOHO.CREATOR.PAGE.getPageParams() is the documented entry point.
+// Read a parameter that the parent Zoho Creator Page passed to this widget.
+// Widget is hosted on Vercel and embedded in Zoho, so window.location.search
+// only carries Zoho's own service params. We probe multiple sources in order:
+//   1. widget iframe URL query string (dev + when Zoho is configured to forward)
+//   2. Zoho SDK — getInitParams().queryParams and PAGE.getPageParams()
+//   3. document.referrer — the parent Zoho URL (#Page:Name?item_code=8138)
 async function getPageParam(name) {
-  // Local dev fast path: direct query on the widget URL itself
+  const pick = (obj) => {
+    if (!obj || typeof obj !== "object") return null;
+    return obj[name] || obj[name.toUpperCase()] || obj[name.toLowerCase()] || null;
+  };
+
+  // 1) direct widget URL param
   const direct = getUrlParam(name);
   if (direct) return direct;
 
+  // Cache expensive SDK calls
   if (state._pageParams === undefined) {
     state._pageParams = null;
-    if (state.creatorReady) {
+    if (state.creatorReady && window.ZOHO?.CREATOR) {
       try {
-        // Primary source: Zoho Creator Page params SDK
-        if (window.ZOHO?.CREATOR?.PAGE?.getPageParams) {
-          const response = await ZOHO.CREATOR.PAGE.getPageParams();
-          state._pageParams =
-            response?.data ||
-            response?.parameters ||
-            response?.pageParams ||
-            response || null;
+        if (ZOHO.CREATOR.UTIL?.getInitParams) {
+          const initParams = await ZOHO.CREATOR.UTIL.getInitParams();
+          console.log("[StockReg] getInitParams:", initParams);
+          const qp =
+            initParams?.queryParams ||
+            initParams?.query_params ||
+            initParams?.pageParams ||
+            initParams?.page_params ||
+            initParams?.params;
+          if (qp) state._pageParams = qp;
         }
-        // Fallback: some SDK builds still expose params via UTIL.getInitParams
-        if (!state._pageParams && window.ZOHO?.CREATOR?.UTIL?.getInitParams) {
-          const params = await ZOHO.CREATOR.UTIL.getInitParams();
+        if (!state._pageParams && ZOHO.CREATOR.PAGE?.getPageParams) {
+          const pageResp = await ZOHO.CREATOR.PAGE.getPageParams();
+          console.log("[StockReg] getPageParams:", pageResp);
           state._pageParams =
-            params?.queryParams ||
-            params?.query_params ||
-            params?.pageParams ||
-            params?.page_params ||
-            params?.params ||
-            params || null;
+            pageResp?.data || pageResp?.parameters || pageResp?.pageParams || pageResp;
         }
       } catch (e) {
-        state._pageParams = null;
+        console.error("[StockReg] page-param SDK error:", e);
       }
     }
   }
+  const fromSdk = pick(state._pageParams);
+  if (fromSdk) return fromSdk;
 
-  const bag = state._pageParams;
-  if (bag && typeof bag === "object") {
-    return bag[name] || bag[name.toUpperCase()] || bag[name.toLowerCase()] || null;
+  // 3) document.referrer fallback — the parent Zoho page URL. Zoho uses hash
+  // routing (#Page:Name?item_code=8138), so the query lives inside the hash.
+  try {
+    const ref = document.referrer;
+    if (ref) {
+      const url = new URL(ref);
+      // Try hash-embedded query first: #Page:X?item_code=8138
+      const hash = url.hash || "";
+      const qIndex = hash.indexOf("?");
+      if (qIndex >= 0) {
+        const hashParams = new URLSearchParams(hash.slice(qIndex + 1));
+        const v = hashParams.get(name);
+        if (v) return v;
+      }
+      // Then a standard search string
+      const v2 = url.searchParams.get(name);
+      if (v2) return v2;
+    }
+  } catch (e) {
+    // ignore parse errors
   }
+
   return null;
 }
 
