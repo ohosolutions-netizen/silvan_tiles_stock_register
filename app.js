@@ -1897,6 +1897,13 @@ async function boot() {
 
   if (state.creatorReady) {
     renderEmptyRegister("Click Load Masters to load item and warehouse options.");
+    // When the widget is opened via ?item_code=<code>, auto-trigger Load
+    // Masters — the fetch is now a single-item criteria query, so it's
+    // fast, and the user shouldn't have to click for the URL-driven flow.
+    const autoItemCode = await getPageParam("item_code");
+    if (autoItemCode) {
+      loadMasters();
+    }
   } else {
     await applyFilters();
   }
