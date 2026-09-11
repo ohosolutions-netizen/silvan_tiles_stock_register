@@ -861,12 +861,21 @@ function renderPageParamDebug(debug) {
   el.textContent = JSON.stringify(debug, null, 2);
 }
 
+// Enumerate everything Zoho exposes so we can see which method/namespace
+// carries the page parameter for widgets embedded in Creator Pages.
+function enumerateZohoSurface() {
+  const root = window.ZOHO?.CREATOR;
+  if (!root) return { available: false };
+  const surface = { available: true, topLevelKeys: Object.keys(root) };
+  ["UTIL", "PAGE", "DATA", "API", "META", "CONTEXT", "WIDGET", "APP", "PUBLISH"].forEach((ns) => {
+    if (root[ns] && typeof root[ns] === "object") {
+      surface[ns] = Object.keys(root[ns]);
+    }
+  });
+  return surface;
+}
+
 // Read a parameter that the parent Zoho Creator Page passed to this widget.
-// Widget is hosted on Vercel and embedded in Zoho, so window.location.search
-// only carries Zoho's own service params. We probe multiple sources in order:
-//   1. widget iframe URL query string (dev + when Zoho is configured to forward)
-//   2. Zoho SDK — getInitParams().queryParams and PAGE.getPageParams()
-//   3. document.referrer — the parent Zoho URL (#Page:Name?item_code=8138)
 async function getPageParam(name) {
   const pick = (obj) => {
     if (!obj || typeof obj !== "object") return null;
@@ -876,12 +885,25 @@ async function getPageParam(name) {
   const debug = {
     lookingFor: name,
     windowLocationSearch: window.location.search || "(empty)",
+    windowLocationHash: window.location.hash || "(empty)",
     documentReferrer: document.referrer || "(empty)",
-    getInitParams: null,
-    getPageParams: null,
-    sdkError: null,
+    zohoSurface: enumerateZohoSurface(),
+    sdkResults: {},
+    sdkErrors: {},
     resolvedVia: null,
     resolvedValue: null,
+  };
+
+  // Helper: try a call and stash the result / error
+  const tryCall = async (path, fn) => {
+    try {
+      const r = await fn();
+      debug.sdkResults[path] = r;
+      return r;
+    } catch (e) {
+      debug.sdkErrors[path] = String(e?.message || e);
+      return null;
+    }
   };
 
   // 1) direct widget URL param
@@ -893,40 +915,64 @@ async function getPageParam(name) {
     return direct;
   }
 
-  // Cache expensive SDK calls
+  // 2) Try every plausible Zoho SDK method — call them all and log
   if (state._pageParams === undefined) {
     state._pageParams = null;
     if (state.creatorReady && window.ZOHO?.CREATOR) {
-      try {
-        if (ZOHO.CREATOR.UTIL?.getInitParams) {
-          const initParams = await ZOHO.CREATOR.UTIL.getInitParams();
-          debug.getInitParams = initParams;
-          const qp =
-            initParams?.queryParams ||
-            initParams?.query_params ||
-            initParams?.pageParams ||
-            initParams?.page_params ||
-            initParams?.params;
-          if (qp) state._pageParams = qp;
+      const root = ZOHO.CREATOR;
+      // Every known namespace/method that MIGHT expose page params
+      const candidates = [
+        ["UTIL.getInitParams", () => root.UTIL?.getInitParams?.()],
+        ["UTIL.getQueryParams", () => root.UTIL?.getQueryParams?.()],
+        ["UTIL.getInputParameters", () => root.UTIL?.getInputParameters?.()],
+        ["UTIL.getParameters", () => root.UTIL?.getParameters?.()],
+        ["PAGE.getPageParams", () => root.PAGE?.getPageParams?.()],
+        ["PAGE.getParameters", () => root.PAGE?.getParameters?.()],
+        ["PAGE.getInputParameters", () => root.PAGE?.getInputParameters?.()],
+        ["PAGE.getQueryParams", () => root.PAGE?.getQueryParams?.()],
+        ["PAGE.getPageDetails", () => root.PAGE?.getPageDetails?.()],
+        ["PAGE.getRecordId", () => root.PAGE?.getRecordId?.()],
+        ["META.getPageDetails", () => root.META?.getPageDetails?.()],
+        ["META.getInputParameters", () => root.META?.getInputParameters?.()],
+        ["CONTEXT.getInputParameters", () => root.CONTEXT?.getInputParameters?.()],
+        ["WIDGET.getInputParameters", () => root.WIDGET?.getInputParameters?.()],
+      ];
+      for (const [path, fn] of candidates) {
+        if (typeof fn !== "function") continue;
+        const invoked = fn();
+        if (invoked && typeof invoked.then === "function") {
+          await tryCall(path, () => invoked);
+        } else if (invoked !== undefined) {
+          debug.sdkResults[path] = invoked;
         }
-        if (!state._pageParams && ZOHO.CREATOR.PAGE?.getPageParams) {
-          const pageResp = await ZOHO.CREATOR.PAGE.getPageParams();
-          debug.getPageParams = pageResp;
-          state._pageParams =
-            pageResp?.data || pageResp?.parameters || pageResp?.pageParams || pageResp;
+      }
+      // Look for the param in any result — check both the raw response and
+      // common inner containers (data, parameters, queryParams, etc.)
+      const containers = ["", "data", "parameters", "queryParams", "query_params",
+                          "pageParams", "page_params", "params", "input", "inputParameters"];
+      for (const [path, val] of Object.entries(debug.sdkResults)) {
+        if (!val || typeof val !== "object") continue;
+        for (const c of containers) {
+          const bag = c ? val[c] : val;
+          if (bag && typeof bag === "object" && !Array.isArray(bag)) {
+            const v = bag[name] || bag[name.toUpperCase()] || bag[name.toLowerCase()];
+            if (v) {
+              state._pageParams = bag;
+              debug.resolvedVia = `${path}${c ? "." + c : ""}`;
+              debug.resolvedValue = v;
+              renderPageParamDebug(debug);
+              return v;
+            }
+          }
         }
-      } catch (e) {
-        debug.sdkError = String(e?.message || e);
       }
     } else {
-      debug.sdkError = "state.creatorReady=false or ZOHO SDK missing";
+      debug.sdkErrors._precheck = "state.creatorReady=false or ZOHO SDK missing";
     }
-  } else {
-    debug.getInitParams = "(cached earlier)";
   }
   const fromSdk = pick(state._pageParams);
   if (fromSdk) {
-    debug.resolvedVia = "SDK";
+    debug.resolvedVia = "SDK (cached)";
     debug.resolvedValue = fromSdk;
     renderPageParamDebug(debug);
     return fromSdk;
