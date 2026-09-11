@@ -854,6 +854,13 @@ function getUrlParam(name) {
   }
 }
 
+function renderPageParamDebug(debug) {
+  const el = document.querySelector("#pageParamDebug");
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = JSON.stringify(debug, null, 2);
+}
+
 // Read a parameter that the parent Zoho Creator Page passed to this widget.
 // Widget is hosted on Vercel and embedded in Zoho, so window.location.search
 // only carries Zoho's own service params. We probe multiple sources in order:
@@ -866,9 +873,25 @@ async function getPageParam(name) {
     return obj[name] || obj[name.toUpperCase()] || obj[name.toLowerCase()] || null;
   };
 
+  const debug = {
+    lookingFor: name,
+    windowLocationSearch: window.location.search || "(empty)",
+    documentReferrer: document.referrer || "(empty)",
+    getInitParams: null,
+    getPageParams: null,
+    sdkError: null,
+    resolvedVia: null,
+    resolvedValue: null,
+  };
+
   // 1) direct widget URL param
   const direct = getUrlParam(name);
-  if (direct) return direct;
+  if (direct) {
+    debug.resolvedVia = "window.location.search";
+    debug.resolvedValue = direct;
+    renderPageParamDebug(debug);
+    return direct;
+  }
 
   // Cache expensive SDK calls
   if (state._pageParams === undefined) {
@@ -877,7 +900,7 @@ async function getPageParam(name) {
       try {
         if (ZOHO.CREATOR.UTIL?.getInitParams) {
           const initParams = await ZOHO.CREATOR.UTIL.getInitParams();
-          console.log("[StockReg] getInitParams:", initParams);
+          debug.getInitParams = initParams;
           const qp =
             initParams?.queryParams ||
             initParams?.query_params ||
@@ -888,17 +911,26 @@ async function getPageParam(name) {
         }
         if (!state._pageParams && ZOHO.CREATOR.PAGE?.getPageParams) {
           const pageResp = await ZOHO.CREATOR.PAGE.getPageParams();
-          console.log("[StockReg] getPageParams:", pageResp);
+          debug.getPageParams = pageResp;
           state._pageParams =
             pageResp?.data || pageResp?.parameters || pageResp?.pageParams || pageResp;
         }
       } catch (e) {
-        console.error("[StockReg] page-param SDK error:", e);
+        debug.sdkError = String(e?.message || e);
       }
+    } else {
+      debug.sdkError = "state.creatorReady=false or ZOHO SDK missing";
     }
+  } else {
+    debug.getInitParams = "(cached earlier)";
   }
   const fromSdk = pick(state._pageParams);
-  if (fromSdk) return fromSdk;
+  if (fromSdk) {
+    debug.resolvedVia = "SDK";
+    debug.resolvedValue = fromSdk;
+    renderPageParamDebug(debug);
+    return fromSdk;
+  }
 
   // 3) document.referrer fallback — the parent Zoho page URL. Zoho uses hash
   // routing (#Page:Name?item_code=8138), so the query lives inside the hash.
@@ -906,22 +938,32 @@ async function getPageParam(name) {
     const ref = document.referrer;
     if (ref) {
       const url = new URL(ref);
-      // Try hash-embedded query first: #Page:X?item_code=8138
       const hash = url.hash || "";
       const qIndex = hash.indexOf("?");
       if (qIndex >= 0) {
         const hashParams = new URLSearchParams(hash.slice(qIndex + 1));
         const v = hashParams.get(name);
-        if (v) return v;
+        if (v) {
+          debug.resolvedVia = "document.referrer#hash";
+          debug.resolvedValue = v;
+          renderPageParamDebug(debug);
+          return v;
+        }
       }
-      // Then a standard search string
       const v2 = url.searchParams.get(name);
-      if (v2) return v2;
+      if (v2) {
+        debug.resolvedVia = "document.referrer?search";
+        debug.resolvedValue = v2;
+        renderPageParamDebug(debug);
+        return v2;
+      }
     }
   } catch (e) {
-    // ignore parse errors
+    debug.sdkError = (debug.sdkError || "") + " | referrer parse: " + String(e?.message || e);
   }
 
+  debug.resolvedVia = "NOT FOUND";
+  renderPageParamDebug(debug);
   return null;
 }
 

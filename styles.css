@@ -297,6 +297,25 @@ input:disabled {
   min-height: 16px;
 }
 
+.page-param-debug {
+  background: #fef3c7;
+  border: 1px solid #fbbf24;
+  border-radius: 6px;
+  color: #78350f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  margin: 8px auto 0;
+  max-width: 1440px;
+  overflow-x: auto;
+  padding: 10px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.page-param-debug[hidden] {
+  display: none;
+}
+
 .summary-grid article {
   background: var(--panel);
   border: 1px solid var(--line);
