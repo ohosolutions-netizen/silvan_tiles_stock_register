@@ -732,21 +732,18 @@ async function fetchItems() {
 async function fetchItemsByCode(code) {
   const codeEsc = String(code).replace(/"/g, '\\"');
   const fields = ["ITEMCODE", "ITEM_CODE", "Item_Code", "ItemCode", "Item Code", "Code"];
-  pushDebug(`fetchItemsByCode: looking up "${code}"`);
   for (const fieldName of fields) {
     try {
       const records = await creatorGetRecords(REPORTS.items, {
         criteria: `${fieldName} == "${codeEsc}"`,
       });
-      pushDebug(`  criteria "${fieldName} == \\"${code}\\"" -> ${records.length} rows`);
       if (records.length) {
         return records.map(toItemOption).filter((item) => item.label);
       }
     } catch (e) {
-      pushDebug(`  criteria "${fieldName}" ERROR: ${(e?.message || String(e)).slice(0, 80)}`);
+      // field name doesn't exist on this report; try next
     }
   }
-  pushDebug("no criteria matched, falling back to full fetchItems()");
   return fetchItems();
 }
 
@@ -879,15 +876,6 @@ function getUrlParam(name) {
   } catch (e) {
     return null;
   }
-}
-
-function pushDebug(msg) {
-  const el = document.querySelector("#pageParamDebug");
-  if (!el) return;
-  el.hidden = false;
-  const time = new Date().toLocaleTimeString();
-  el.textContent = (el.textContent || "") + `[${time}] ${msg}\n`;
-  console.log(`[StockReg] ${msg}`);
 }
 
 // Read a parameter that the parent Zoho Creator Page passed to this widget.
@@ -1040,7 +1028,6 @@ async function loadMasters() {
     // item record — a targeted criteria fetch is orders of magnitude faster
     // than pulling all ~17k items.
     const urlItemCode = await getPageParam("item_code");
-    pushDebug(`loadMasters: getPageParam("item_code") = ${JSON.stringify(urlItemCode)}`);
     const itemsPromise = urlItemCode ? fetchItemsByCode(urlItemCode) : fetchItems();
 
     const [items, warehouses] = await withTimeout(
@@ -1101,18 +1088,12 @@ async function loadMasters() {
     // the search box. User only has to touch the warehouse (or accept the
     // auto-selected one), and results load automatically.
     const urlItemCode2 = await getPageParam("item_code");
-    pushDebug(`auto-select: urlItemCode=${JSON.stringify(urlItemCode2)}, state.items.length=${state.items.length}`);
     if (urlItemCode2) {
       const wanted = cleanKey(urlItemCode2);
       const item = state.items.find((it) => cleanKey(it.code) === wanted);
-      pushDebug(`  cleanKey wanted="${wanted}", item found=${!!item}, item.code=${item?.code}`);
-      if (state.items[0]) {
-        pushDebug(`  first item: code="${state.items[0].code}" label="${state.items[0].label?.slice(0, 60)}"`);
-      }
       if (item) {
         state.urlItemLocked = true;
         chooseItem(item);
-        pushDebug(`  chooseItem called, urlItemLocked=true`);
       }
     }
 
@@ -1122,9 +1103,7 @@ async function loadMasters() {
 
     // Auto-apply on load when the item came from the URL and a warehouse is
     // already selected (either super admin default or a branch-locked user).
-    pushDebug(`post-load: urlItemLocked=${state.urlItemLocked}, warehouseValue="${els.warehouseSelect.value}"`);
     if (state.urlItemLocked && els.warehouseSelect.value) {
-      pushDebug("  auto-apply triggered");
       applyFilters();
     }
   } catch (error) {
@@ -1924,10 +1903,8 @@ async function boot() {
     // Masters — the fetch is now a single-item criteria query, so it's fast,
     // and the user shouldn't have to click for the URL-driven flow.
     const autoItemCode = await getPageParam("item_code");
-    pushDebug(`boot: getPageParam("item_code") = ${JSON.stringify(autoItemCode)}`);
     if (autoItemCode) {
       renderEmptyRegister(`Loading item ${autoItemCode}...`);
-      pushDebug("boot: triggering loadMasters()");
       loadMasters();
     } else {
       renderEmptyRegister("Click Load Masters to load item and warehouse options.");
