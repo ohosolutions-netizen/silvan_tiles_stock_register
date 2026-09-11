@@ -854,132 +854,67 @@ function getUrlParam(name) {
   }
 }
 
-function renderPageParamDebug(debug) {
-  const el = document.querySelector("#pageParamDebug");
-  if (!el) return;
-  el.hidden = false;
-  el.textContent = JSON.stringify(debug, null, 2);
-}
-
-// Enumerate everything Zoho exposes so we can see which method/namespace
-// carries the page parameter for widgets embedded in Creator Pages.
-function enumerateZohoSurface() {
-  const root = window.ZOHO?.CREATOR;
-  if (!root) return { available: false };
-  const surface = { available: true, topLevelKeys: Object.keys(root) };
-  ["UTIL", "PAGE", "DATA", "API", "META", "CONTEXT", "WIDGET", "APP", "PUBLISH"].forEach((ns) => {
-    if (root[ns] && typeof root[ns] === "object") {
-      surface[ns] = Object.keys(root[ns]);
-    }
-  });
-  return surface;
-}
-
 // Read a parameter that the parent Zoho Creator Page passed to this widget.
+// The widget iframe URL doesn't carry Page params directly — Zoho hands them
+// through the JS SDK. Different SDK builds expose them under different
+// method/namespace combinations, so we probe several silently and cache the
+// first bag that contains the wanted key.
 async function getPageParam(name) {
-  const pick = (obj) => {
-    if (!obj || typeof obj !== "object") return null;
-    return obj[name] || obj[name.toUpperCase()] || obj[name.toLowerCase()] || null;
-  };
+  const pick = (obj) =>
+    obj && typeof obj === "object" && !Array.isArray(obj)
+      ? obj[name] || obj[name.toUpperCase()] || obj[name.toLowerCase()] || null
+      : null;
 
-  const debug = {
-    lookingFor: name,
-    windowLocationSearch: window.location.search || "(empty)",
-    windowLocationHash: window.location.hash || "(empty)",
-    documentReferrer: document.referrer || "(empty)",
-    zohoSurface: enumerateZohoSurface(),
-    sdkResults: {},
-    sdkErrors: {},
-    resolvedVia: null,
-    resolvedValue: null,
-  };
-
-  // Helper: try a call and stash the result / error
-  const tryCall = async (path, fn) => {
-    try {
-      const r = await fn();
-      debug.sdkResults[path] = r;
-      return r;
-    } catch (e) {
-      debug.sdkErrors[path] = String(e?.message || e);
-      return null;
-    }
-  };
-
-  // 1) direct widget URL param
+  // 1) Local dev fast path
   const direct = getUrlParam(name);
-  if (direct) {
-    debug.resolvedVia = "window.location.search";
-    debug.resolvedValue = direct;
-    renderPageParamDebug(debug);
-    return direct;
-  }
+  if (direct) return direct;
 
-  // 2) Try every plausible Zoho SDK method — call them all and log
+  // 2) Zoho SDK probes
   if (state._pageParams === undefined) {
     state._pageParams = null;
     if (state.creatorReady && window.ZOHO?.CREATOR) {
       const root = ZOHO.CREATOR;
-      // Every known namespace/method that MIGHT expose page params
       const candidates = [
-        ["UTIL.getInitParams", () => root.UTIL?.getInitParams?.()],
-        ["UTIL.getQueryParams", () => root.UTIL?.getQueryParams?.()],
-        ["UTIL.getInputParameters", () => root.UTIL?.getInputParameters?.()],
-        ["UTIL.getParameters", () => root.UTIL?.getParameters?.()],
-        ["PAGE.getPageParams", () => root.PAGE?.getPageParams?.()],
-        ["PAGE.getParameters", () => root.PAGE?.getParameters?.()],
-        ["PAGE.getInputParameters", () => root.PAGE?.getInputParameters?.()],
-        ["PAGE.getQueryParams", () => root.PAGE?.getQueryParams?.()],
-        ["PAGE.getPageDetails", () => root.PAGE?.getPageDetails?.()],
-        ["PAGE.getRecordId", () => root.PAGE?.getRecordId?.()],
-        ["META.getPageDetails", () => root.META?.getPageDetails?.()],
-        ["META.getInputParameters", () => root.META?.getInputParameters?.()],
-        ["CONTEXT.getInputParameters", () => root.CONTEXT?.getInputParameters?.()],
-        ["WIDGET.getInputParameters", () => root.WIDGET?.getInputParameters?.()],
+        () => root.UTIL?.getInitParams?.(),
+        () => root.UTIL?.getQueryParams?.(),
+        () => root.UTIL?.getInputParameters?.(),
+        () => root.UTIL?.getParameters?.(),
+        () => root.PAGE?.getPageParams?.(),
+        () => root.PAGE?.getParameters?.(),
+        () => root.PAGE?.getInputParameters?.(),
+        () => root.PAGE?.getQueryParams?.(),
+        () => root.PAGE?.getPageDetails?.(),
+        () => root.META?.getPageDetails?.(),
+        () => root.META?.getInputParameters?.(),
+        () => root.CONTEXT?.getInputParameters?.(),
+        () => root.WIDGET?.getInputParameters?.(),
       ];
-      for (const [path, fn] of candidates) {
-        if (typeof fn !== "function") continue;
-        const invoked = fn();
-        if (invoked && typeof invoked.then === "function") {
-          await tryCall(path, () => invoked);
-        } else if (invoked !== undefined) {
-          debug.sdkResults[path] = invoked;
-        }
-      }
-      // Look for the param in any result — check both the raw response and
-      // common inner containers (data, parameters, queryParams, etc.)
       const containers = ["", "data", "parameters", "queryParams", "query_params",
                           "pageParams", "page_params", "params", "input", "inputParameters"];
-      for (const [path, val] of Object.entries(debug.sdkResults)) {
-        if (!val || typeof val !== "object") continue;
-        for (const c of containers) {
-          const bag = c ? val[c] : val;
-          if (bag && typeof bag === "object" && !Array.isArray(bag)) {
-            const v = bag[name] || bag[name.toUpperCase()] || bag[name.toLowerCase()];
+      for (const fn of candidates) {
+        try {
+          const invoked = fn();
+          if (invoked === undefined) continue;
+          const val = invoked && typeof invoked.then === "function" ? await invoked : invoked;
+          if (!val || typeof val !== "object") continue;
+          for (const c of containers) {
+            const bag = c ? val[c] : val;
+            const v = pick(bag);
             if (v) {
               state._pageParams = bag;
-              debug.resolvedVia = `${path}${c ? "." + c : ""}`;
-              debug.resolvedValue = v;
-              renderPageParamDebug(debug);
               return v;
             }
           }
+        } catch (e) {
+          // Silently try the next probe
         }
       }
-    } else {
-      debug.sdkErrors._precheck = "state.creatorReady=false or ZOHO SDK missing";
     }
   }
   const fromSdk = pick(state._pageParams);
-  if (fromSdk) {
-    debug.resolvedVia = "SDK (cached)";
-    debug.resolvedValue = fromSdk;
-    renderPageParamDebug(debug);
-    return fromSdk;
-  }
+  if (fromSdk) return fromSdk;
 
-  // 3) document.referrer fallback — the parent Zoho page URL. Zoho uses hash
-  // routing (#Page:Name?item_code=8138), so the query lives inside the hash.
+  // 3) document.referrer fallback (parent Zoho URL with hash routing)
   try {
     const ref = document.referrer;
     if (ref) {
@@ -987,29 +922,16 @@ async function getPageParam(name) {
       const hash = url.hash || "";
       const qIndex = hash.indexOf("?");
       if (qIndex >= 0) {
-        const hashParams = new URLSearchParams(hash.slice(qIndex + 1));
-        const v = hashParams.get(name);
-        if (v) {
-          debug.resolvedVia = "document.referrer#hash";
-          debug.resolvedValue = v;
-          renderPageParamDebug(debug);
-          return v;
-        }
+        const v = new URLSearchParams(hash.slice(qIndex + 1)).get(name);
+        if (v) return v;
       }
       const v2 = url.searchParams.get(name);
-      if (v2) {
-        debug.resolvedVia = "document.referrer?search";
-        debug.resolvedValue = v2;
-        renderPageParamDebug(debug);
-        return v2;
-      }
+      if (v2) return v2;
     }
   } catch (e) {
-    debug.sdkError = (debug.sdkError || "") + " | referrer parse: " + String(e?.message || e);
+    // ignore
   }
 
-  debug.resolvedVia = "NOT FOUND";
-  renderPageParamDebug(debug);
   return null;
 }
 
