@@ -216,6 +216,7 @@ const state = {
   selectedItem: null,
   currentUser: null,
   warehouseLocked: false,
+  urlItemLocked: false,
 };
 
 function withTimeout(promise, timeoutMs, message) {
@@ -837,11 +838,20 @@ function showItemSuggestions() {
 }
 
 function setMasterDependentControls(enabled) {
-  els.itemSearch.disabled = !enabled;
+  // If item was pinned via URL param, keep the item search locked too.
+  els.itemSearch.disabled = !enabled || state.urlItemLocked;
   // If the current user is restricted to a single branch, keep the warehouse
   // dropdown disabled even when other controls become enabled.
   els.warehouseSelect.disabled = !enabled || state.warehouseLocked;
   els.applyButton.disabled = !enabled;
+}
+
+function getUrlParam(name) {
+  try {
+    return new URLSearchParams(window.location.search).get(name);
+  } catch (e) {
+    return null;
+  }
 }
 
 async function getCurrentUserEmail() {
@@ -962,9 +972,29 @@ async function loadMasters() {
       );
       if (kanjipura) els.warehouseSelect.value = kanjipura.value;
     }
+
+    // If page URL carries ?item_code=<code>, auto-select that item and lock
+    // the search box. User only has to touch the warehouse (or accept the
+    // auto-selected one), and results load automatically.
+    const urlItemCode = getUrlParam("item_code");
+    if (urlItemCode) {
+      const wanted = cleanKey(urlItemCode);
+      const item = state.items.find((it) => cleanKey(it.code) === wanted);
+      if (item) {
+        state.urlItemLocked = true;
+        chooseItem(item);
+      }
+    }
+
     setMasterDependentControls(true);
     els.loadMastersButton.textContent = "Masters Loaded";
     els.loadStatus.textContent = "";
+
+    // Auto-apply on load when the item came from the URL and a warehouse is
+    // already selected (either super admin default or a branch-locked user).
+    if (state.urlItemLocked && els.warehouseSelect.value) {
+      applyFilters();
+    }
   } catch (error) {
     const detail = error?.message || JSON.stringify(error) || String(error);
     state.mastersLoaded = false;
@@ -1727,6 +1757,12 @@ async function boot() {
   els.itemSearch.addEventListener("focus", showItemSuggestions);
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".search-box")) closeItemSuggestions();
+  });
+  // When the item was set via URL, warehouse changes auto-apply.
+  els.warehouseSelect.addEventListener("change", () => {
+    if (state.urlItemLocked && state.selectedItem && els.warehouseSelect.value) {
+      applyFilters();
+    }
   });
   setMasterDependentControls(false);
 
