@@ -1870,12 +1870,6 @@ async function boot() {
 
   if (state.creatorReady) {
     renderEmptyRegister("Click Load Masters to load item and warehouse options.");
-    // If a page parameter like ?item_code=<code> was passed to the widget,
-    // auto-trigger masters loading so the user doesn't have to click.
-    const autoItemCode = await getPageParam("item_code");
-    if (autoItemCode) {
-      loadMasters();
-    }
   } else {
     await applyFilters();
   }
