@@ -726,22 +726,27 @@ async function fetchItems() {
 }
 
 // Fast targeted fetch for a single item by code — used when the widget is
-// opened with ?item_code=<code> so we skip the 17k-row bulk pull.
+// opened with ?item_code=<code> so we skip the 17k-row bulk pull. If none of
+// the criteria field-name variants match Item_Report's actual schema, fall
+// back to the bulk fetch so the widget still works.
 async function fetchItemsByCode(code) {
   const codeEsc = String(code).replace(/"/g, '\\"');
-  for (const fieldName of ["Item_Code", "ITEMCODE", "ItemCode", "Item Code", "ITEM_CODE", "Code"]) {
+  const fields = ["ITEMCODE", "ITEM_CODE", "Item_Code", "ItemCode", "Item Code", "Code"];
+  for (const fieldName of fields) {
     try {
       const records = await creatorGetRecords(REPORTS.items, {
         criteria: `${fieldName} == "${codeEsc}"`,
       });
       if (records.length) {
+        console.log(`[StockReg] Item_Report criteria matched via ${fieldName} (${records.length} rows)`);
         return records.map(toItemOption).filter((item) => item.label);
       }
     } catch (e) {
       // field name doesn't exist on this report; try next
     }
   }
-  return [];
+  console.warn("[StockReg] No criteria field matched Item_Report; falling back to full fetch");
+  return fetchItems();
 }
 
 async function fetchWarehouses() {
@@ -1896,13 +1901,15 @@ async function boot() {
   }
 
   if (state.creatorReady) {
-    renderEmptyRegister("Click Load Masters to load item and warehouse options.");
     // When the widget is opened via ?item_code=<code>, auto-trigger Load
-    // Masters — the fetch is now a single-item criteria query, so it's
-    // fast, and the user shouldn't have to click for the URL-driven flow.
+    // Masters — the fetch is now a single-item criteria query, so it's fast,
+    // and the user shouldn't have to click for the URL-driven flow.
     const autoItemCode = await getPageParam("item_code");
     if (autoItemCode) {
+      renderEmptyRegister(`Loading item ${autoItemCode}...`);
       loadMasters();
+    } else {
+      renderEmptyRegister("Click Load Masters to load item and warehouse options.");
     }
   } else {
     await applyFilters();
