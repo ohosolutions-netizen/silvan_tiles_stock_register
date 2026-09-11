@@ -704,23 +704,44 @@ async function creatorGetRecordsSafe(reportName, options = {}) {
   }
 }
 
+function toItemOption(record) {
+  const code = getText(record, ["ITEMCODE", "ITEM CODE", "Item Code", "Item_Code", "Code"]);
+  const name = getText(record, ["ITEM NAME", "Item Name", "Item", "Product Name", "Name"]);
+  const label = combineText(name, code) || fallbackLabel(record) || displayValue(record.ID);
+  return {
+    value: itemKeyFromRecord(record) || cleanKey(label),
+    label,
+    code,
+    name,
+    id: displayValue(record.ID || record.ID1 || record.ID_),
+  };
+}
+
 async function fetchItems() {
   const records = await creatorGetRecordsSafe(REPORTS.items);
   return records
-    .map((record) => {
-      const code = getText(record, ["ITEMCODE", "ITEM CODE", "Item Code", "Item_Code", "Code"]);
-      const name = getText(record, ["ITEM NAME", "Item Name", "Item", "Product Name", "Name"]);
-      const label = combineText(name, code) || fallbackLabel(record) || displayValue(record.ID);
-      return {
-        value: itemKeyFromRecord(record) || cleanKey(label),
-        label,
-        code,
-        name,
-        id: displayValue(record.ID || record.ID1 || record.ID_),
-      };
-    })
+    .map(toItemOption)
     .filter((item) => item.label)
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+// Fast targeted fetch for a single item by code — used when the widget is
+// opened with ?item_code=<code> so we skip the 17k-row bulk pull.
+async function fetchItemsByCode(code) {
+  const codeEsc = String(code).replace(/"/g, '\\"');
+  for (const fieldName of ["Item_Code", "ITEMCODE", "ItemCode", "Item Code", "ITEM_CODE", "Code"]) {
+    try {
+      const records = await creatorGetRecords(REPORTS.items, {
+        criteria: `${fieldName} == "${codeEsc}"`,
+      });
+      if (records.length) {
+        return records.map(toItemOption).filter((item) => item.label);
+      }
+    } catch (e) {
+      // field name doesn't exist on this report; try next
+    }
+  }
+  return [];
 }
 
 async function fetchWarehouses() {
@@ -1000,8 +1021,14 @@ async function loadMasters() {
   }, 5000);
 
   try {
+    // If the widget is opened via ?item_code=<code>, we only need that one
+    // item record — a targeted criteria fetch is orders of magnitude faster
+    // than pulling all ~17k items.
+    const urlItemCode = await getPageParam("item_code");
+    const itemsPromise = urlItemCode ? fetchItemsByCode(urlItemCode) : fetchItems();
+
     const [items, warehouses] = await withTimeout(
-      Promise.all([fetchItems(), fetchWarehouses()]),
+      Promise.all([itemsPromise, fetchWarehouses()]),
       120000,
       "Creator reports did not respond — the item catalog may be too large or the connection is slow. Try again.",
     );
