@@ -18,7 +18,15 @@ const REPORTS = {
   employees: "All_Employees",
 };
 
-const SUPER_ADMIN_EMAIL = "hidesigntiles@gmail.com";
+// Profiles that get unrestricted access to every warehouse. Anything else
+// falls into the "restricted to my own branch" bucket.
+const FULL_ACCESS_PROFILES = new Set([
+  "write",
+  "main admins",
+  "main admin",
+  "administrator",
+  "admin",
+]);
 
 const COLUMNS = [
   "date",
@@ -975,7 +983,7 @@ async function getCurrentUserEmail() {
   return null;
 }
 
-async function fetchUserBranch(email) {
+async function fetchUserRecord(email) {
   if (!email || !state.creatorReady) return null;
   const emailEsc = String(email).replace(/"/g, '\\"');
   // Try common field names for the email column on the employee record
@@ -985,16 +993,21 @@ async function fetchUserBranch(email) {
         criteria: `${fieldName} == "${emailEsc}"`,
       });
       if (!records.length) continue;
-      // Branch is a lookup — return both its ID (reliable match) and name.
-      const branchField = getField(records[0], [
+      const record = records[0];
+      // Branch is a lookup — capture both its ID (reliable match) and name.
+      const branchField = getField(record, [
         "Branch", "Warehouse", "Assigned_Branch", "Assigned_Warehouse",
         "BRANCH", "WAREHOUSE", "Home_Branch", "Home_Warehouse",
       ]);
       const isObj = branchField && typeof branchField === "object" && !Array.isArray(branchField);
-      const id = isObj ? String(branchField.ID || "").trim() : "";
-      const name = String(displayValue(branchField) || "").trim();
-      if (!id && !name) return null;
-      return { id, name };
+      const branch = {
+        id: isObj ? String(branchField.ID || "").trim() : "",
+        name: String(displayValue(branchField) || "").trim(),
+      };
+      const profile = getText(record, [
+        "Profile", "PROFILE", "User_Profile", "UserProfile", "Role", "ROLE",
+      ]);
+      return { branch, profile };
     } catch (e) {
       // field name doesn't exist — try next
     }
@@ -1042,31 +1055,36 @@ async function loadMasters() {
     state.mastersLoaded = true;
     renderItemOptions(items);
 
-    // Determine current user and, for non-super-admins, restrict the
-    // warehouse dropdown to their assigned branch.
+    // Determine current user, their All_Employees profile, and their branch.
+    // Users whose profile is one of FULL_ACCESS_PROFILES (Write / Main Admins)
+    // see every warehouse and can pick freely. Everyone else is locked to
+    // their own branch.
     state.warehouseLocked = false;
     let visibleWarehouses = warehouses;
     const currentUser = await getCurrentUserEmail();
-    const isSuperAdmin =
-      currentUser && currentUser.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
-    if (currentUser && !isSuperAdmin) {
-      const userBranch = await fetchUserBranch(currentUser);
-      if (userBranch && (userBranch.id || userBranch.name)) {
-        // Prefer matching by lookup ID (reliable); fall back to name.
-        let matched = userBranch.id
-          ? warehouses.filter((w) => w.id && w.id === userBranch.id)
-          : [];
-        if (!matched.length && userBranch.name) {
-          const branchKey = cleanKey(userBranch.name);
-          matched = warehouses.filter((w) => {
-            const whKey = cleanKey(w.name || w.label);
-            return whKey.includes(branchKey) || branchKey.includes(whKey);
-          });
-        }
-        if (matched.length) {
-          visibleWarehouses = matched;
-          state.warehouseLocked = true;
-        }
+    const userRecord = currentUser ? await fetchUserRecord(currentUser) : null;
+    const profileKey = String(userRecord?.profile || "").trim().toLowerCase();
+    const isFullAccess = FULL_ACCESS_PROFILES.has(profileKey);
+
+    if (isFullAccess) {
+      // Full-access profile → keep the entire warehouse list, dropdown enabled.
+    } else if (userRecord?.branch && (userRecord.branch.id || userRecord.branch.name)) {
+      // Restricted profile → match to the user's assigned branch (ID first,
+      // then name substring) and lock the dropdown to it.
+      const branch = userRecord.branch;
+      let matched = branch.id
+        ? warehouses.filter((w) => w.id && w.id === branch.id)
+        : [];
+      if (!matched.length && branch.name) {
+        const branchKey = cleanKey(branch.name);
+        matched = warehouses.filter((w) => {
+          const whKey = cleanKey(w.name || w.label);
+          return whKey.includes(branchKey) || branchKey.includes(whKey);
+        });
+      }
+      if (matched.length) {
+        visibleWarehouses = matched;
+        state.warehouseLocked = true;
       }
     }
     state.warehouses = visibleWarehouses;
