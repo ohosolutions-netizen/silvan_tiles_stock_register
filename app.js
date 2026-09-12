@@ -996,8 +996,6 @@ async function fetchUserRecord(email) {
       });
       if (!records.length) continue;
       const record = records[0];
-      state._debugRawEmployee = record;
-      state._debugEmailField = fieldName;
       // Branch is a lookup — capture both its ID (reliable match) and name.
       const branchField = getField(record, [
         "Branch", "Warehouse", "Assigned_Branch", "Assigned_Warehouse",
@@ -1009,6 +1007,7 @@ async function fetchUserRecord(email) {
         name: String(displayValue(branchField) || "").trim(),
       };
       const profile = getText(record, [
+        "Employee_Type", "EmployeeType", "EMPLOYEE_TYPE", "Employee Type",
         "Profile", "PROFILE", "User_Profile", "UserProfile", "Role", "ROLE",
       ]);
       return { branch, profile };
@@ -1068,27 +1067,6 @@ async function loadMasters() {
     const currentUser = await getCurrentUserEmail();
     const userRecord = currentUser ? await fetchUserRecord(currentUser) : null;
     const isFullAccess = isFullAccessProfile(userRecord?.profile);
-
-    // Diagnostic: show the profile string and full-access decision so we can
-    // confirm which token in the profile does or doesn't trip the gate.
-    const dbg = document.querySelector("#userProfileDebug");
-    if (dbg) {
-      const rawKeys = state._debugRawEmployee ? Object.keys(state._debugRawEmployee) : [];
-      dbg.hidden = false;
-      dbg.textContent = JSON.stringify(
-        {
-          loginUser: currentUser,
-          emailFieldMatched: state._debugEmailField || null,
-          resolvedProfile: userRecord?.profile ?? null,
-          resolvedBranch: userRecord?.branch ?? null,
-          isFullAccess,
-          allEmployeeRecordKeys: rawKeys,
-          rawRecordSample: state._debugRawEmployee,
-        },
-        null,
-        2,
-      );
-    }
 
     if (isFullAccess) {
       // Full-access profile → keep the entire warehouse list, dropdown enabled.
