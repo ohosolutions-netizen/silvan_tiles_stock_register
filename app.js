@@ -18,15 +18,17 @@ const REPORTS = {
   employees: "All_Employees",
 };
 
-// Profiles that get unrestricted access to every warehouse. Anything else
-// falls into the "restricted to my own branch" bucket.
-const FULL_ACCESS_PROFILES = new Set([
-  "write",
-  "main admins",
-  "main admin",
-  "administrator",
-  "admin",
-]);
+// Any All_Employees profile that contains one of these tokens grants
+// unrestricted access to every warehouse. Anything else is treated as
+// "restricted to my own branch". Substring match so we catch Zoho's
+// "Main Administrator" as well as custom labels like "App Admin".
+const FULL_ACCESS_TOKENS = ["admin", "write", "full access"];
+
+function isFullAccessProfile(profile) {
+  const key = String(profile || "").trim().toLowerCase();
+  if (!key) return false;
+  return FULL_ACCESS_TOKENS.some((token) => key.includes(token));
+}
 
 const COLUMNS = [
   "date",
@@ -1063,8 +1065,7 @@ async function loadMasters() {
     let visibleWarehouses = warehouses;
     const currentUser = await getCurrentUserEmail();
     const userRecord = currentUser ? await fetchUserRecord(currentUser) : null;
-    const profileKey = String(userRecord?.profile || "").trim().toLowerCase();
-    const isFullAccess = FULL_ACCESS_PROFILES.has(profileKey);
+    const isFullAccess = isFullAccessProfile(userRecord?.profile);
 
     if (isFullAccess) {
       // Full-access profile → keep the entire warehouse list, dropdown enabled.
