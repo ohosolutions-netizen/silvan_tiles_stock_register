@@ -972,10 +972,7 @@ async function fetchUserContextViaApi(email) {
   const config = {
     api_name: "Fetch_User_Info",
     http_method: "GET",
-    parameters: { emailparam: email },
-    data: { emailparam: email },
-    workspace_name: "hidesigntiles",
-    account_owner_name: "hidesigntiles",
+    query_params: { emailparam: email },
   };
   try {
     const raw = invoke.call(ZOHO.CREATOR.DATA, config);
