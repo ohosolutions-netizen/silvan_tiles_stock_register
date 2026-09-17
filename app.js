@@ -987,6 +987,8 @@ function renderStockApiDebug(filters) {
       ? {
           item_code: filters.itemCode || filters.itemKey || null,
           warehouse_dropdown_key: filters.warehouseKey || null,
+          warehouse_dropdown_label:
+            els.warehouseSelect?.selectedOptions?.[0]?.text || null,
           resolved_warehouse_id: filters.resolvedWarehouseId || null,
           from_date: filters.fromDate || null,
           to_date: filters.toDate || null,
@@ -2217,9 +2219,15 @@ async function boot() {
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".search-box")) closeItemSuggestions();
   });
-  // When the item was set via URL, warehouse changes auto-apply.
+  // Changing the warehouse always re-fires the register fetch (as long as
+  // an item is chosen and masters have loaded) so admins don't have to
+  // reach for Apply after switching branch.
   els.warehouseSelect.addEventListener("change", () => {
-    if (state.urlItemLocked && state.selectedItem && els.warehouseSelect.value) {
+    if (
+      state.mastersLoaded &&
+      state.selectedItem &&
+      els.warehouseSelect.value
+    ) {
       applyFilters();
     }
   });
