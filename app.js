@@ -969,29 +969,69 @@ async function fetchUserContextViaApi(email) {
     return null;
   }
   dbg.called = true;
-  const config = {
-    api_name: "Fetch_User_Info",
-    http_method: "GET",
-    query_params: { emailparam: email },
-  };
-  try {
-    const raw = invoke.call(ZOHO.CREATOR.DATA, config);
-    const resp = raw && typeof raw.then === "function" ? await raw : raw;
-    dbg.rawResponse = resp;
-    if (!resp) return null;
-    let body = resp.result ?? resp.data ?? resp;
-    if (typeof body === "string") {
-      try { body = JSON.parse(body); } catch (e) { dbg.parseError = String(e); }
+  // Try multiple config shapes — the SDK's key naming varies by build. On
+  // the last-known-working call, `parameters` + `data` sent the API through
+  // but Deluge received null; `query_params` was rejected outright. Include
+  // both plus a few common variants so at least one carries the value.
+  const paramBag = { emailparam: email };
+  const configs = [
+    {
+      api_name: "Fetch_User_Info",
+      http_method: "GET",
+      query_params: paramBag,
+      parameters: paramBag,
+      data: paramBag,
+    },
+    {
+      api_name: "Fetch_User_Info",
+      http_method: "GET",
+      parameters: paramBag,
+      data: paramBag,
+    },
+    {
+      api_name: "Fetch_User_Info",
+      http_method: "GET",
+      params: paramBag,
+    },
+  ];
+  dbg.attempts = [];
+  for (const config of configs) {
+    const attempt = { configKeys: Object.keys(config) };
+    try {
+      const raw = invoke.call(ZOHO.CREATOR.DATA, config);
+      const resp = raw && typeof raw.then === "function" ? await raw : raw;
+      attempt.rawResponse = resp;
+      if (!resp) {
+        attempt.result = "empty";
+        dbg.attempts.push(attempt);
+        continue;
+      }
+      let body = resp.result ?? resp.data ?? resp;
+      if (typeof body === "string") {
+        try { body = JSON.parse(body); } catch (e) { attempt.parseError = String(e); }
+      }
+      attempt.parsedBody = body;
+      const user = body?.user;
+      if (user?.found === true) {
+        attempt.result = "OK (user found)";
+        dbg.attempts.push(attempt);
+        return body;
+      }
+      attempt.result = user ? `user.found=${user.found} email=${user.email}` : "body missing user";
+      dbg.attempts.push(attempt);
+      // Keep the last non-null body so the fallback can still use warehouses
+      if (body && (body.user || body.warehouses)) dbg._lastBody = body;
+    } catch (e) {
+      // Serialize the error properly so we don't get "[object Object]"
+      attempt.error = e?.message
+        ? e.message
+        : e?.responseText
+        ? e.responseText
+        : (function () { try { return JSON.stringify(e); } catch { return String(e); } })();
+      dbg.attempts.push(attempt);
     }
-    dbg.parsedBody = body;
-    if (body && typeof body === "object" && (body.user || body.warehouses)) {
-      return body;
-    }
-    dbg.error = "response body missing user/warehouses";
-  } catch (e) {
-    dbg.error = String(e?.message || e);
   }
-  return null;
+  return dbg._lastBody || null;
 }
 
 async function fetchUserRecord(email) {
