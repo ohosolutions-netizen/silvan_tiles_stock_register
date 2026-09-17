@@ -969,30 +969,31 @@ async function fetchUserContextViaApi(email) {
     return null;
   }
   dbg.called = true;
-  // Try multiple config shapes — the SDK's key naming varies by build. On
-  // the last-known-working call, `parameters` + `data` sent the API through
-  // but Deluge received null; `query_params` was rejected outright. Include
-  // both plus a few common variants so at least one carries the value.
+  // Try many key-name variants — this SDK build rejects "query_params"
+  // outright and silently ignores "parameters" / "data" / "params".
   const paramBag = { emailparam: email };
   const configs = [
-    {
-      api_name: "Fetch_User_Info",
-      http_method: "GET",
-      query_params: paramBag,
-      parameters: paramBag,
-      data: paramBag,
-    },
-    {
-      api_name: "Fetch_User_Info",
-      http_method: "GET",
-      parameters: paramBag,
-      data: paramBag,
-    },
-    {
-      api_name: "Fetch_User_Info",
-      http_method: "GET",
-      params: paramBag,
-    },
+    // Camel-case queryParams
+    { api_name: "Fetch_User_Info", http_method: "GET", queryParams: paramBag },
+    // Bake it into the api_name — hacky but definitely bypasses whatever
+    // the SDK is doing to strip our params
+    { api_name: "Fetch_User_Info?emailparam=" + encodeURIComponent(email), http_method: "GET" },
+    // Add the value directly on the top-level config
+    { api_name: "Fetch_User_Info", http_method: "GET", emailparam: email },
+    // Try `args` (some Deluge SDKs use this for functions)
+    { api_name: "Fetch_User_Info", http_method: "GET", args: paramBag },
+    // Try `arguments`
+    { api_name: "Fetch_User_Info", http_method: "GET", arguments: paramBag },
+    // Try `payload`
+    { api_name: "Fetch_User_Info", http_method: "GET", payload: paramBag },
+    // Try `body` even for GET
+    { api_name: "Fetch_User_Info", http_method: "GET", body: paramBag },
+    // Try lowercase queryparams
+    { api_name: "Fetch_User_Info", http_method: "GET", queryparams: paramBag },
+    // Try `params` alone
+    { api_name: "Fetch_User_Info", http_method: "GET", params: paramBag },
+    // Nested under `data.parameters`
+    { api_name: "Fetch_User_Info", http_method: "GET", data: { parameters: paramBag } },
   ];
   dbg.attempts = [];
   for (const config of configs) {
