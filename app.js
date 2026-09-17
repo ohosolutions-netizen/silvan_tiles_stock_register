@@ -1809,48 +1809,148 @@ async function openingStockFromReport(filters) {
   return openingSum;
 }
 
+// Movement `type` strings emitted by the Stock_Register_Date Deluge function
+// mapped to the row column each qty should land in. Any type not in this
+// table is dropped silently so a new source can be added Deluge-side without
+// breaking the UI.
+const API_MOVEMENT_COLUMN = {
+  purchase: "purchase",
+  sales: "sales",
+  credit: "creditNote",
+  credit_note: "creditNote",
+  vendor_credit: "vendorCredit",
+  trans_out: "transOut",
+  transfer_out: "transOut",
+  trans_in: "transIn",
+  transfer_in: "transIn",
+  reprocess_out: "reprocessOut",
+  reprocess_in: "reprocessIn",
+  shortage: "shortage",
+  surplus: "surplus",
+};
+
+// Live path: everything comes from the Stock_Register_Date custom API which
+// runs as the app owner and therefore works for every profile. The Deluge
+// function does the opening-stock walk itself, so we just render its output.
+// The previous report-fetching implementation is preserved verbatim below,
+// commented out, so it can be revived if the API misbehaves.
 async function loadStockRegister(filters) {
   if (!state.creatorReady) {
     return loadSampleStockRegister(filters);
   }
 
-  const [financialYearOpening, { movements, counts, matchedCounts }, itemMaster] = await Promise.all([
-    openingStockFromReport(filters),
-    transactionMovements(filters),
-    fetchItemMasterForItem(filters),
-  ]);
+  const warehouseRecord = (state.warehouses || []).find(
+    (w) => w.value === filters.warehouseKey,
+  );
+  const apiWarehouseId = warehouseRecord?.id || filters.warehouseKey;
 
-  // Diagnostic for the UI
-  const firstUnit = movements.find((m) => m.unit)?.unit || "";
-  const stocksDbg = `\n\nAll_Stocks: ${state._stocksCriteria || "(no fetch)"} | matchedSum=${state._stocksMatchSum ?? 0}`;
-  if (itemMaster) {
-    state._itemMasterDebug = `[${state._itemMasterCriteria}] tiles:${itemMaster.tiles} multiUnit:${itemMaster.multiUnit} unitMap:${JSON.stringify(itemMaster.unitMap)} firstUnit:"${firstUnit}" keys:[${state._itemMasterKeys}] tilesInfo:${state._tilesInfoRaw}${stocksDbg}`;
-  } else {
-    state._itemMasterDebug = `itemMaster:null [${state._itemMasterCriteria || "no attempt"}] firstUnit:"${firstUnit}"${stocksDbg}`;
+  const apiBody = await fetchStockRegisterData(
+    filters.itemCode || filters.itemKey,
+    apiWarehouseId,
+    filters.fromDate,
+    filters.toDate,
+  );
+
+  // Always refresh the yellow debug panel so the response is visible in the
+  // UI even when it comes back empty or errored.
+  renderStockApiDebug({ ...filters, resolvedWarehouseId: apiWarehouseId });
+
+  if (!apiBody) {
+    state._itemMasterDebug = "Stock_Register_Date API returned no body — see debug panel.";
+    return { openingStock: 0, rows: [], counts: {}, matchedCounts: {}, boxSize: 0 };
   }
 
-  // Convert qty to base unit (Nos) using item master's Tiles Information map
-  applyUnitConversion(movements, itemMaster);
-
-  const beforeFromDate = movements.filter((movement) => beforeDate(movement.date, filters.fromDate));
-  const selectedRange = movements.filter((movement) => inDateRange(movement.date, filters.fromDate, filters.toDate));
-
-  const openingStock = calculateRows(financialYearOpening, beforeFromDate).at(-1)?.balance ?? financialYearOpening;
-
-  // Box size = Nos per Box for tiles items (only when Multi Unit is also on)
+  const openingStock = Number(apiBody.opening_stock || 0);
+  const itemMasterInfo = apiBody.item_master || {};
   const boxSize =
-    itemMaster && itemMaster.tiles && itemMaster.multiUnit && itemMaster.unitMap?.box > 0
-      ? itemMaster.unitMap.box
+    itemMasterInfo.tiles && itemMasterInfo.multi_unit && Number(itemMasterInfo.box_size) > 0
+      ? Number(itemMasterInfo.box_size)
       : 0;
+
+  const movements = (apiBody.movements || [])
+    .map((m) => {
+      const column = API_MOVEMENT_COLUMN[String(m.type || "").toLowerCase()];
+      if (!column) return null;
+      const row = blankMovement({
+        date: normalizeDateValue(m.date),
+        addedTime: m.added_time || "",
+        billNumber: m.bill_no || "",
+        party: m.party || "",
+        unit: m.unit != null && m.unit !== "" ? String(m.unit) : "",
+      });
+      row[column] = Number(m.qty || 0);
+      return row;
+    })
+    .filter(Boolean);
+
+  // Deluge returns movements in mixed order; sort by date, then added_time so
+  // the running balance walks chronologically.
+  movements.sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return String(a.addedTime).localeCompare(String(b.addedTime));
+  });
+
+  state._itemMasterDebug =
+    `via Stock_Register_Date | tiles:${!!itemMasterInfo.tiles}` +
+    ` multiUnit:${!!itemMasterInfo.multi_unit}` +
+    ` box_size:${itemMasterInfo.box_size ?? 0}` +
+    ` movements:${movements.length}`;
 
   return {
     openingStock,
-    rows: calculateRows(openingStock, selectedRange),
-    counts,
-    matchedCounts,
+    rows: calculateRows(openingStock, movements),
+    counts: {},
+    matchedCounts: {},
     boxSize,
   };
 }
+
+/* --------------------------------------------------------------------------
+ * COMMENTED OUT — legacy path that pulls each transaction report directly.
+ * Superseded by the Stock_Register_Date custom API above (which the
+ * BRANCH ACCOUNTS profile can call, whereas these reports were blocked
+ * for non-admins). Kept for reference so we can compare or revive quickly.
+ *
+ * async function loadStockRegister_fromReports(filters) {
+ *   if (!state.creatorReady) {
+ *     return loadSampleStockRegister(filters);
+ *   }
+ *
+ *   const [financialYearOpening, { movements, counts, matchedCounts }, itemMaster] = await Promise.all([
+ *     openingStockFromReport(filters),
+ *     transactionMovements(filters),
+ *     fetchItemMasterForItem(filters),
+ *   ]);
+ *
+ *   const firstUnit = movements.find((m) => m.unit)?.unit || "";
+ *   const stocksDbg = `\n\nAll_Stocks: ${state._stocksCriteria || "(no fetch)"} | matchedSum=${state._stocksMatchSum ?? 0}`;
+ *   if (itemMaster) {
+ *     state._itemMasterDebug = `[${state._itemMasterCriteria}] tiles:${itemMaster.tiles} multiUnit:${itemMaster.multiUnit} unitMap:${JSON.stringify(itemMaster.unitMap)} firstUnit:"${firstUnit}" keys:[${state._itemMasterKeys}] tilesInfo:${state._tilesInfoRaw}${stocksDbg}`;
+ *   } else {
+ *     state._itemMasterDebug = `itemMaster:null [${state._itemMasterCriteria || "no attempt"}] firstUnit:"${firstUnit}"${stocksDbg}`;
+ *   }
+ *
+ *   applyUnitConversion(movements, itemMaster);
+ *
+ *   const beforeFromDate = movements.filter((movement) => beforeDate(movement.date, filters.fromDate));
+ *   const selectedRange = movements.filter((movement) => inDateRange(movement.date, filters.fromDate, filters.toDate));
+ *
+ *   const openingStock = calculateRows(financialYearOpening, beforeFromDate).at(-1)?.balance ?? financialYearOpening;
+ *
+ *   const boxSize =
+ *     itemMaster && itemMaster.tiles && itemMaster.multiUnit && itemMaster.unitMap?.box > 0
+ *       ? itemMaster.unitMap.box
+ *       : 0;
+ *
+ *   return {
+ *     openingStock,
+ *     rows: calculateRows(openingStock, selectedRange),
+ *     counts,
+ *     matchedCounts,
+ *     boxSize,
+ *   };
+ * }
+ * ------------------------------------------------------------------------ */
 
 function loadSampleStockRegister(filters) {
   const sampleMovements = [
@@ -2012,25 +2112,10 @@ async function applyFilters() {
   setStatus("Fetching Creator reports...");
 
   try {
-    // Fire the new Stock_Register_Date custom API in parallel with the
-    // legacy loadStockRegister so we can compare the two responses. The
-    // Deluge function expects the actual Zoho warehouse record ID (e.g.
-    // "381344000000127043"), so translate the dropdown's synthetic key to
-    // the id we cached from Fetch_User_Info before sending.
-    const warehouseRecord = (state.warehouses || []).find(
-      (w) => w.value === filters.warehouseKey,
-    );
-    const apiWarehouseId = warehouseRecord?.id || filters.warehouseKey;
-    const stockApiPromise = fetchStockRegisterData(
-      filters.itemCode || filters.itemKey,
-      apiWarehouseId,
-      filters.fromDate,
-      filters.toDate,
-    ).then(() =>
-      renderStockApiDebug({ ...filters, resolvedWarehouseId: apiWarehouseId }),
-    );
+    // loadStockRegister now sources everything from the Stock_Register_Date
+    // custom API (see rewrite above) and drops its response into the yellow
+    // debug panel on the way through.
     const result = await loadStockRegister(filters);
-    await stockApiPromise.catch(() => {});
     state.visibleRows = result.rows;
     state.openingStockValue = result.openingStock;
     state.boxSize = result.boxSize || 0;
