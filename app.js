@@ -996,6 +996,8 @@ async function fetchUserRecord(email) {
       });
       if (!records.length) continue;
       const record = records[0];
+      state._debugRawEmployee = record;
+      state._debugEmailField = fieldName;
       // Branch is a lookup — capture both its ID (reliable match) and name.
       const branchField = getField(record, [
         "Branch", "Warehouse", "Assigned_Branch", "Assigned_Warehouse",
@@ -1068,26 +1070,52 @@ async function loadMasters() {
     const userRecord = currentUser ? await fetchUserRecord(currentUser) : null;
     const isFullAccess = isFullAccessProfile(userRecord?.profile);
 
+    let matchedByBranch = [];
+    let branchMatchMode = "n/a";
     if (isFullAccess) {
-      // Full-access profile → keep the entire warehouse list, dropdown enabled.
+      branchMatchMode = "full-access-skip";
     } else if (userRecord?.branch && (userRecord.branch.id || userRecord.branch.name)) {
-      // Restricted profile → match to the user's assigned branch (ID first,
-      // then name substring) and lock the dropdown to it.
       const branch = userRecord.branch;
-      let matched = branch.id
+      matchedByBranch = branch.id
         ? warehouses.filter((w) => w.id && w.id === branch.id)
         : [];
-      if (!matched.length && branch.name) {
+      if (matchedByBranch.length) branchMatchMode = "id-match";
+      if (!matchedByBranch.length && branch.name) {
         const branchKey = cleanKey(branch.name);
-        matched = warehouses.filter((w) => {
+        matchedByBranch = warehouses.filter((w) => {
           const whKey = cleanKey(w.name || w.label);
           return whKey.includes(branchKey) || branchKey.includes(whKey);
         });
+        if (matchedByBranch.length) branchMatchMode = "name-substring-match";
       }
-      if (matched.length) {
-        visibleWarehouses = matched;
+      if (matchedByBranch.length) {
+        visibleWarehouses = matchedByBranch;
         state.warehouseLocked = true;
+      } else {
+        branchMatchMode = "NO MATCH";
       }
+    }
+
+    // Diagnostic panel
+    const dbg = document.querySelector("#userProfileDebug");
+    if (dbg) {
+      dbg.hidden = false;
+      dbg.textContent = JSON.stringify(
+        {
+          loginUser: currentUser,
+          emailFieldMatched: state._debugEmailField || null,
+          resolvedProfile: userRecord?.profile ?? null,
+          resolvedBranch: userRecord?.branch ?? null,
+          isFullAccess,
+          branchMatchMode,
+          matchedByBranchCount: matchedByBranch.length,
+          matchedByBranchLabels: matchedByBranch.map((w) => w.label),
+          allWarehouseIds: warehouses.map((w) => ({ id: w.id, label: w.label })),
+          rawEmployeeRecord: state._debugRawEmployee,
+        },
+        null,
+        2,
+      );
     }
     state.warehouses = visibleWarehouses;
     state.warehouseCount = visibleWarehouses.length;
