@@ -986,7 +986,8 @@ function renderStockApiDebug(filters) {
     calledWith: filters
       ? {
           item_code: filters.itemCode || filters.itemKey || null,
-          warehouse_id: filters.warehouseKey || null,
+          warehouse_dropdown_key: filters.warehouseKey || null,
+          resolved_warehouse_id: filters.resolvedWarehouseId || null,
           from_date: filters.fromDate || null,
           to_date: filters.toDate || null,
         }
@@ -2012,14 +2013,22 @@ async function applyFilters() {
 
   try {
     // Fire the new Stock_Register_Date custom API in parallel with the
-    // legacy loadStockRegister so we can compare the two responses. Result
-    // goes into the yellow debug panel via renderStockApiDebug().
+    // legacy loadStockRegister so we can compare the two responses. The
+    // Deluge function expects the actual Zoho warehouse record ID (e.g.
+    // "381344000000127043"), so translate the dropdown's synthetic key to
+    // the id we cached from Fetch_User_Info before sending.
+    const warehouseRecord = (state.warehouses || []).find(
+      (w) => w.value === filters.warehouseKey,
+    );
+    const apiWarehouseId = warehouseRecord?.id || filters.warehouseKey;
     const stockApiPromise = fetchStockRegisterData(
       filters.itemCode || filters.itemKey,
-      filters.warehouseKey,
+      apiWarehouseId,
       filters.fromDate,
       filters.toDate,
-    ).then(() => renderStockApiDebug(filters));
+    ).then(() =>
+      renderStockApiDebug({ ...filters, resolvedWarehouseId: apiWarehouseId }),
+    );
     const result = await loadStockRegister(filters);
     await stockApiPromise.catch(() => {});
     state.visibleRows = result.rows;
