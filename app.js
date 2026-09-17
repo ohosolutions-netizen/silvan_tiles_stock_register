@@ -985,19 +985,19 @@ async function getCurrentUserEmail() {
   return null;
 }
 
-// Call the Fetch_User_Info custom API. Runs as the app owner so it works
-// even for profiles that don't have read access on All_Employees /
-// Warehouse_Report. Returns the parsed { user, warehouses } payload or null.
+// Call the Fetch_User_Info custom API. Widget iframe is on Vercel and this
+// SDK build may not expose ZOHO.CREATOR.API, so probe every plausible entry
+// point AND fall back to a direct HTTPS call to the custom API endpoint.
 async function fetchUserContextViaApi(email) {
-  const dbg = { called: false, sdkAvailable: false, attempts: [] };
+  const dbg = { called: false, attempts: [] };
   state._apiCallDebug = dbg;
-  if (!email || !state.creatorReady || !window.ZOHO?.CREATOR?.API) {
-    dbg.sdkAvailable = Boolean(window.ZOHO?.CREATOR?.API);
-    return null;
-  }
+  if (!email || !state.creatorReady || !window.ZOHO?.CREATOR) return null;
   dbg.called = true;
-  dbg.sdkAvailable = true;
-  dbg.apiKeys = Object.keys(ZOHO.CREATOR.API);
+  const root = window.ZOHO.CREATOR;
+  dbg.creatorKeys = Object.keys(root);
+  ["API", "UTIL", "PAGE", "DATA", "META", "PUBLISH", "FUNCTION", "CUSTOM_API"].forEach((ns) => {
+    if (root[ns] && typeof root[ns] === "object") dbg[`${ns}Keys`] = Object.keys(root[ns]);
+  });
 
   const config = {
     workspacename: "hidesigntiles",
@@ -1006,27 +1006,30 @@ async function fetchUserContextViaApi(email) {
     http_method: "GET",
     data: { emailparam: email },
     parameters: { emailparam: email },
+    args: JSON.stringify({ emailparam: email }),
   };
-  const methods = [
-    { name: "invokeCustomAPI", fn: () => ZOHO.CREATOR.API.invokeCustomAPI?.(config) },
-    { name: "invokeCustomApi", fn: () => ZOHO.CREATOR.API.invokeCustomApi?.(config) },
+
+  // SDK method candidates across every namespace we know Zoho uses
+  const candidates = [
+    ["API.invokeCustomAPI",       root.API?.invokeCustomAPI],
+    ["API.invokeCustomApi",       root.API?.invokeCustomApi],
+    ["UTIL.execFunction",         root.UTIL?.execFunction],
+    ["UTIL.executeFunction",      root.UTIL?.executeFunction],
+    ["UTIL.invokeCustomAPI",      root.UTIL?.invokeCustomAPI],
+    ["FUNCTION.invokeCustomAPI",  root.FUNCTION?.invokeCustomAPI],
+    ["FUNCTION.execute",          root.FUNCTION?.execute],
+    ["CUSTOM_API.invoke",         root.CUSTOM_API?.invoke],
+    ["PUBLISH.invokeCustomAPI",   root.PUBLISH?.invokeCustomAPI],
+    ["PAGE.invokeCustomAPI",      root.PAGE?.invokeCustomAPI],
   ];
-  for (const { name, fn } of methods) {
+  for (const [name, fn] of candidates) {
+    if (typeof fn !== "function") continue;
     const attempt = { method: name };
     try {
-      const raw = fn();
-      if (raw === undefined) {
-        attempt.result = "method not present";
-        dbg.attempts.push(attempt);
-        continue;
-      }
+      const raw = fn.call(root, config);
       const resp = raw && typeof raw.then === "function" ? await raw : raw;
       attempt.rawResponse = resp;
-      if (!resp) {
-        attempt.result = "empty response";
-        dbg.attempts.push(attempt);
-        continue;
-      }
+      if (!resp) { attempt.result = "empty"; dbg.attempts.push(attempt); continue; }
       let body = resp.result ?? resp.data ?? resp;
       if (typeof body === "string") {
         try { body = JSON.parse(body); } catch (e) { attempt.parseError = String(e); }
