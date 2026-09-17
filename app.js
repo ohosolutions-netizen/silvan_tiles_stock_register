@@ -974,6 +974,74 @@ async function getCurrentUserEmail() {
   return null;
 }
 
+// Push the raw response from the Stock_Register_Date custom API into the
+// yellow debug panel so we can eyeball whether the Deluge function is
+// returning the shape we expect (opening_stock, item_master, movements).
+function renderStockApiDebug(filters) {
+  const dbg = document.querySelector("#userProfileDebug");
+  if (!dbg) return;
+  dbg.hidden = false;
+  const payload = {
+    __stockRegisterDateApi: state._stockApiDebug || null,
+    calledWith: filters
+      ? {
+          item_code: filters.itemCode || filters.itemKey || null,
+          warehouse_id: filters.warehouseKey || null,
+          from_date: filters.fromDate || null,
+          to_date: filters.toDate || null,
+        }
+      : null,
+    __userContext: {
+      loginUser: state._loginUser || null,
+      apiCallDebug: state._apiCallDebug || null,
+    },
+  };
+  dbg.textContent = JSON.stringify(payload, null, 2);
+}
+
+// Call the Stock_Register_Date custom API which returns opening stock,
+// item master info, and all movement rows for a specific item + warehouse
+// + date range. Uses the "bake params into api_name" trick we confirmed
+// works because the SDK silently strips other config keys for GET.
+async function fetchStockRegisterData(itemCode, warehouseId, fromDate, toDate) {
+  const dbg = { called: false };
+  state._stockApiDebug = dbg;
+  if (!state.creatorReady) return null;
+  const invoke = window.ZOHO?.CREATOR?.DATA?.invokeCustomApi;
+  if (typeof invoke !== "function") {
+    dbg.error = "ZOHO.CREATOR.DATA.invokeCustomApi missing";
+    return null;
+  }
+  const qs =
+    "item_code=" + encodeURIComponent(itemCode) +
+    "&warehouse_id=" + encodeURIComponent(warehouseId) +
+    "&from_date=" + encodeURIComponent(fromDate) +
+    "&to_date=" + encodeURIComponent(toDate);
+  const config = {
+    api_name: "Stock_Register_Date?" + qs,
+    http_method: "GET",
+  };
+  dbg.called = true;
+  dbg.apiName = config.api_name;
+  try {
+    const raw = invoke.call(ZOHO.CREATOR.DATA, config);
+    const resp = raw && typeof raw.then === "function" ? await raw : raw;
+    dbg.rawResponse = resp;
+    if (!resp) return null;
+    let body = resp.result ?? resp.data ?? resp;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch (e) { dbg.parseError = String(e); }
+    }
+    dbg.parsedBody = body;
+    return body;
+  } catch (e) {
+    dbg.error = e?.message
+      ? e.message
+      : (function () { try { return JSON.stringify(e); } catch { return String(e); } })();
+  }
+  return null;
+}
+
 // Call the Fetch_User_Info custom API via ZOHO.CREATOR.DATA.invokeCustomApi
 // (the actual method exposed by this SDK build). Runs as the app owner so
 // it works for profiles without direct report read access.
@@ -1120,6 +1188,7 @@ async function loadMasters() {
     // one round-trip, bypassing per-profile read restrictions. Call it
     // alongside the items pull.
     const currentUserEmail = await getCurrentUserEmail();
+    state._loginUser = currentUserEmail;
     const apiContextPromise = currentUserEmail
       ? fetchUserContextViaApi(currentUserEmail)
       : Promise.resolve(null);
@@ -1942,7 +2011,17 @@ async function applyFilters() {
   setStatus("Fetching Creator reports...");
 
   try {
+    // Fire the new Stock_Register_Date custom API in parallel with the
+    // legacy loadStockRegister so we can compare the two responses. Result
+    // goes into the yellow debug panel via renderStockApiDebug().
+    const stockApiPromise = fetchStockRegisterData(
+      filters.itemCode || filters.itemKey,
+      filters.warehouseKey,
+      filters.fromDate,
+      filters.toDate,
+    ).then(() => renderStockApiDebug(filters));
     const result = await loadStockRegister(filters);
+    await stockApiPromise.catch(() => {});
     state.visibleRows = result.rows;
     state.openingStockValue = result.openingStock;
     state.boxSize = result.boxSize || 0;
