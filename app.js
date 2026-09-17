@@ -888,11 +888,9 @@ function getUrlParam(name) {
   }
 }
 
-// Read a parameter that the parent Zoho Creator Page passed to this widget.
-// The widget iframe URL doesn't carry Page params directly — Zoho hands them
-// through the JS SDK. Different SDK builds expose them under different
-// method/namespace combinations, so we probe several silently and cache the
-// first bag that contains the wanted key.
+// Read a parameter that the parent Zoho Creator Page passed to this widget,
+// via ZOHO.CREATOR.UTIL.getQueryParams (the actual method on this SDK).
+// Falls back to widget URL and document.referrer for local dev.
 async function getPageParam(name) {
   const pick = (obj) =>
     obj && typeof obj === "object" && !Array.isArray(obj)
@@ -903,52 +901,25 @@ async function getPageParam(name) {
   const direct = getUrlParam(name);
   if (direct) return direct;
 
-  // 2) Zoho SDK probes
+  // 2) Zoho SDK
   if (state._pageParams === undefined) {
     state._pageParams = null;
-    if (state.creatorReady && window.ZOHO?.CREATOR) {
-      const root = ZOHO.CREATOR;
-      const candidates = [
-        () => root.UTIL?.getInitParams?.(),
-        () => root.UTIL?.getQueryParams?.(),
-        () => root.UTIL?.getInputParameters?.(),
-        () => root.UTIL?.getParameters?.(),
-        () => root.PAGE?.getPageParams?.(),
-        () => root.PAGE?.getParameters?.(),
-        () => root.PAGE?.getInputParameters?.(),
-        () => root.PAGE?.getQueryParams?.(),
-        () => root.PAGE?.getPageDetails?.(),
-        () => root.META?.getPageDetails?.(),
-        () => root.META?.getInputParameters?.(),
-        () => root.CONTEXT?.getInputParameters?.(),
-        () => root.WIDGET?.getInputParameters?.(),
-      ];
-      const containers = ["", "data", "parameters", "queryParams", "query_params",
-                          "pageParams", "page_params", "params", "input", "inputParameters"];
-      for (const fn of candidates) {
-        try {
-          const invoked = fn();
-          if (invoked === undefined) continue;
-          const val = invoked && typeof invoked.then === "function" ? await invoked : invoked;
-          if (!val || typeof val !== "object") continue;
-          for (const c of containers) {
-            const bag = c ? val[c] : val;
-            const v = pick(bag);
-            if (v) {
-              state._pageParams = bag;
-              return v;
-            }
-          }
-        } catch (e) {
-          // Silently try the next probe
-        }
+    const getQP = window.ZOHO?.CREATOR?.UTIL?.getQueryParams;
+    if (state.creatorReady && typeof getQP === "function") {
+      try {
+        const raw = getQP.call(ZOHO.CREATOR.UTIL);
+        const resp = raw && typeof raw.then === "function" ? await raw : raw;
+        state._pageParams =
+          resp?.queryParams || resp?.query_params || resp?.data || resp || null;
+      } catch (e) {
+        // ignore
       }
     }
   }
   const fromSdk = pick(state._pageParams);
   if (fromSdk) return fromSdk;
 
-  // 3) document.referrer fallback (parent Zoho URL with hash routing)
+  // 3) document.referrer fallback
   try {
     const ref = document.referrer;
     if (ref) {
@@ -985,67 +956,43 @@ async function getCurrentUserEmail() {
   return null;
 }
 
-// Call the Fetch_User_Info custom API. Widget iframe is on Vercel and this
-// SDK build may not expose ZOHO.CREATOR.API, so probe every plausible entry
-// point AND fall back to a direct HTTPS call to the custom API endpoint.
+// Call the Fetch_User_Info custom API via ZOHO.CREATOR.DATA.invokeCustomApi
+// (the actual method exposed by this SDK build). Runs as the app owner so
+// it works for profiles without direct report read access.
 async function fetchUserContextViaApi(email) {
-  const dbg = { called: false, attempts: [] };
+  const dbg = { called: false };
   state._apiCallDebug = dbg;
-  if (!email || !state.creatorReady || !window.ZOHO?.CREATOR) return null;
+  if (!email || !state.creatorReady) return null;
+  const invoke = window.ZOHO?.CREATOR?.DATA?.invokeCustomApi;
+  if (typeof invoke !== "function") {
+    dbg.error = "ZOHO.CREATOR.DATA.invokeCustomApi is not available";
+    return null;
+  }
   dbg.called = true;
-  const root = window.ZOHO.CREATOR;
-  dbg.creatorKeys = Object.keys(root);
-  ["API", "UTIL", "PAGE", "DATA", "META", "PUBLISH", "FUNCTION", "CUSTOM_API"].forEach((ns) => {
-    if (root[ns] && typeof root[ns] === "object") dbg[`${ns}Keys`] = Object.keys(root[ns]);
-  });
-
   const config = {
-    workspacename: "hidesigntiles",
-    appname: "silvan-tiles",
-    functionname: "Fetch_User_Info",
+    api_name: "Fetch_User_Info",
     http_method: "GET",
-    data: { emailparam: email },
     parameters: { emailparam: email },
-    args: JSON.stringify({ emailparam: email }),
+    data: { emailparam: email },
+    workspace_name: "hidesigntiles",
+    account_owner_name: "hidesigntiles",
   };
-
-  // SDK method candidates across every namespace we know Zoho uses
-  const candidates = [
-    ["API.invokeCustomAPI",       root.API?.invokeCustomAPI],
-    ["API.invokeCustomApi",       root.API?.invokeCustomApi],
-    ["UTIL.execFunction",         root.UTIL?.execFunction],
-    ["UTIL.executeFunction",      root.UTIL?.executeFunction],
-    ["UTIL.invokeCustomAPI",      root.UTIL?.invokeCustomAPI],
-    ["FUNCTION.invokeCustomAPI",  root.FUNCTION?.invokeCustomAPI],
-    ["FUNCTION.execute",          root.FUNCTION?.execute],
-    ["CUSTOM_API.invoke",         root.CUSTOM_API?.invoke],
-    ["PUBLISH.invokeCustomAPI",   root.PUBLISH?.invokeCustomAPI],
-    ["PAGE.invokeCustomAPI",      root.PAGE?.invokeCustomAPI],
-  ];
-  for (const [name, fn] of candidates) {
-    if (typeof fn !== "function") continue;
-    const attempt = { method: name };
-    try {
-      const raw = fn.call(root, config);
-      const resp = raw && typeof raw.then === "function" ? await raw : raw;
-      attempt.rawResponse = resp;
-      if (!resp) { attempt.result = "empty"; dbg.attempts.push(attempt); continue; }
-      let body = resp.result ?? resp.data ?? resp;
-      if (typeof body === "string") {
-        try { body = JSON.parse(body); } catch (e) { attempt.parseError = String(e); }
-      }
-      attempt.parsedBody = body;
-      if (body && typeof body === "object" && (body.user || body.warehouses)) {
-        attempt.result = "OK";
-        dbg.attempts.push(attempt);
-        return body;
-      }
-      attempt.result = "body missing user/warehouses";
-      dbg.attempts.push(attempt);
-    } catch (e) {
-      attempt.error = String(e?.message || e);
-      dbg.attempts.push(attempt);
+  try {
+    const raw = invoke.call(ZOHO.CREATOR.DATA, config);
+    const resp = raw && typeof raw.then === "function" ? await raw : raw;
+    dbg.rawResponse = resp;
+    if (!resp) return null;
+    let body = resp.result ?? resp.data ?? resp;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch (e) { dbg.parseError = String(e); }
     }
+    dbg.parsedBody = body;
+    if (body && typeof body === "object" && (body.user || body.warehouses)) {
+      return body;
+    }
+    dbg.error = "response body missing user/warehouses";
+  } catch (e) {
+    dbg.error = String(e?.message || e);
   }
   return null;
 }
