@@ -985,6 +985,46 @@ async function getCurrentUserEmail() {
   return null;
 }
 
+// Call the Fetch_User_Info custom API. Runs as the app owner so it works
+// even for profiles that don't have read access on All_Employees /
+// Warehouse_Report. Returns the parsed { user, warehouses } payload or null.
+async function fetchUserContextViaApi(email) {
+  if (!email || !state.creatorReady || !window.ZOHO?.CREATOR?.API) return null;
+  const config = {
+    workspacename: "hidesigntiles",
+    appname: "silvan-tiles",
+    functionname: "Fetch_User_Info",
+    http_method: "GET",
+    // GET params — cover both keys, SDK versions differ on which one they read
+    data: { emailparam: email },
+    parameters: { emailparam: email },
+  };
+  const methods = [
+    () => ZOHO.CREATOR.API.invokeCustomAPI?.(config),
+    () => ZOHO.CREATOR.API.invokeCustomApi?.(config),
+  ];
+  for (const invoke of methods) {
+    try {
+      const raw = invoke();
+      if (raw === undefined) continue;
+      const resp = raw && typeof raw.then === "function" ? await raw : raw;
+      if (!resp) continue;
+      // Success shape: { code: 3000, result: {...} }
+      if (resp.code !== undefined && String(resp.code) !== "3000") continue;
+      let body = resp.result ?? resp.data ?? resp;
+      if (typeof body === "string") {
+        try { body = JSON.parse(body); } catch (e) { /* leave as string */ }
+      }
+      if (body && typeof body === "object" && (body.user || body.warehouses)) {
+        return body;
+      }
+    } catch (e) {
+      // Try next method
+    }
+  }
+  return null;
+}
+
 async function fetchUserRecord(email) {
   if (!email || !state.creatorReady) return null;
   const emailEsc = String(email).replace(/"/g, '\\"');
@@ -1048,11 +1088,42 @@ async function loadMasters() {
     const urlItemCode = await getPageParam("item_code");
     const itemsPromise = urlItemCode ? fetchItemsByCode(urlItemCode) : fetchItems();
 
-    const [items, warehouses] = await withTimeout(
-      Promise.all([itemsPromise, fetchWarehouses()]),
+    // Fetch_User_Info runs as the app owner and returns user + warehouses in
+    // one round-trip, bypassing per-profile read restrictions. Call it
+    // alongside the items pull.
+    const currentUserEmail = await getCurrentUserEmail();
+    const apiContextPromise = currentUserEmail
+      ? fetchUserContextViaApi(currentUserEmail)
+      : Promise.resolve(null);
+
+    const [items, apiContext] = await withTimeout(
+      Promise.all([itemsPromise, apiContextPromise]),
       120000,
       "Creator reports did not respond — the item catalog may be too large or the connection is slow. Try again.",
     );
+
+    // Warehouses: prefer the API payload; fall back to Warehouse_Report if
+    // the API didn't return anything.
+    let warehouses;
+    if (apiContext?.warehouses && Array.isArray(apiContext.warehouses) && apiContext.warehouses.length) {
+      warehouses = apiContext.warehouses
+        .map((w) => ({
+          value: cleanKey(combineText(w.code, w.name) || w.name || w.code || String(w.id)),
+          label: w.name || String(w.id),
+          code: w.code || "",
+          name: w.name || "",
+          id: String(w.id || ""),
+        }))
+        .sort((a, b) => {
+          const aKanji = a.label.toLowerCase().includes("kanjipura");
+          const bKanji = b.label.toLowerCase().includes("kanjipura");
+          if (aKanji && !bKanji) return -1;
+          if (!aKanji && bKanji) return 1;
+          return a.label.localeCompare(b.label);
+        });
+    } else {
+      warehouses = await fetchWarehouses();
+    }
     state.items = items;
     state.warehouses = warehouses;
     state.itemCount = items.length;
@@ -1066,20 +1137,46 @@ async function loadMasters() {
     // their own branch.
     state.warehouseLocked = false;
     let visibleWarehouses = warehouses;
-    const currentUser = await getCurrentUserEmail();
-    const userRecord = currentUser ? await fetchUserRecord(currentUser) : null;
+    const currentUser = currentUserEmail;
+    // Prefer the API's payload for the user record; otherwise hit the report
+    // directly as a fallback.
+    let userRecord = null;
+    if (apiContext?.user?.found) {
+      const u = apiContext.user;
+      userRecord = {
+        profile: u.employee_type || "",
+        branch: u.branch
+          ? {
+              id: String(u.branch.id || ""),
+              name: String(u.branch.name || ""),
+              warehouseId: String(u.branch.warehouse_id || ""),
+            }
+          : null,
+      };
+    } else if (currentUser) {
+      userRecord = await fetchUserRecord(currentUser);
+    }
     const isFullAccess = isFullAccessProfile(userRecord?.profile);
 
     let matchedByBranch = [];
     let branchMatchMode = "n/a";
     if (isFullAccess) {
       branchMatchMode = "full-access-skip";
-    } else if (userRecord?.branch && (userRecord.branch.id || userRecord.branch.name)) {
+    } else if (userRecord?.branch && (userRecord.branch.warehouseId || userRecord.branch.id || userRecord.branch.name)) {
       const branch = userRecord.branch;
-      matchedByBranch = branch.id
-        ? warehouses.filter((w) => w.id && w.id === branch.id)
+      // 1) The API resolves the Warehouse row for the user's Branch and
+      //    returns its ID as warehouse_id — most reliable.
+      matchedByBranch = branch.warehouseId
+        ? warehouses.filter((w) => w.id && w.id === branch.warehouseId)
         : [];
-      if (matchedByBranch.length) branchMatchMode = "id-match";
+      if (matchedByBranch.length) branchMatchMode = "api-warehouse-id-match";
+      // 2) Fall back to the Branch table's ID (works only if Branch and
+      //    Warehouse share IDs — usually they don't).
+      if (!matchedByBranch.length && branch.id) {
+        matchedByBranch = warehouses.filter((w) => w.id && w.id === branch.id);
+        if (matchedByBranch.length) branchMatchMode = "branch-id-match";
+      }
+      // 3) Last resort: name substring match.
       if (!matchedByBranch.length && branch.name) {
         const branchKey = cleanKey(branch.name);
         matchedByBranch = warehouses.filter((w) => {
