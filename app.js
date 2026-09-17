@@ -888,35 +888,53 @@ function getUrlParam(name) {
   }
 }
 
-// Read a parameter that the parent Zoho Creator Page passed to this widget,
-// via ZOHO.CREATOR.UTIL.getQueryParams (the actual method on this SDK).
-// Falls back to widget URL and document.referrer for local dev.
+// Read a parameter that the parent Zoho Creator Page passed to this widget.
+// Widgets embedded in Pages receive params via UTIL.getWidgetParams; widgets
+// opened with URL query strings use UTIL.getQueryParams. Both are probed.
 async function getPageParam(name) {
-  const pick = (obj) =>
-    obj && typeof obj === "object" && !Array.isArray(obj)
-      ? obj[name] || obj[name.toUpperCase()] || obj[name.toLowerCase()] || null
-      : null;
+  const pick = (obj) => {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    return obj[name] || obj[name.toUpperCase()] || obj[name.toLowerCase()] || null;
+  };
+  const drill = (val) => {
+    if (!val || typeof val !== "object") return null;
+    return (
+      pick(val) ||
+      pick(val.queryParams) ||
+      pick(val.query_params) ||
+      pick(val.widgetParams) ||
+      pick(val.widget_params) ||
+      pick(val.data) ||
+      null
+    );
+  };
 
   // 1) Local dev fast path
   const direct = getUrlParam(name);
   if (direct) return direct;
 
-  // 2) Zoho SDK
-  if (state._pageParams === undefined) {
-    state._pageParams = null;
-    const getQP = window.ZOHO?.CREATOR?.UTIL?.getQueryParams;
-    if (state.creatorReady && typeof getQP === "function") {
-      try {
-        const raw = getQP.call(ZOHO.CREATOR.UTIL);
-        const resp = raw && typeof raw.then === "function" ? await raw : raw;
-        state._pageParams =
-          resp?.queryParams || resp?.query_params || resp?.data || resp || null;
-      } catch (e) {
-        // ignore
+  // 2) Zoho SDK — try widget params first, then query params
+  if (!state._pageParamsChecked) {
+    state._pageParamsChecked = true;
+    const util = window.ZOHO?.CREATOR?.UTIL;
+    if (state.creatorReady && util) {
+      for (const fn of [util.getWidgetParams, util.getQueryParams, util.getInitParams]) {
+        if (typeof fn !== "function") continue;
+        try {
+          const raw = fn.call(util);
+          const resp = raw && typeof raw.then === "function" ? await raw : raw;
+          const v = drill(resp);
+          if (v) {
+            state._pageParamValue = { [name]: v };
+            break;
+          }
+        } catch (e) {
+          // try next
+        }
       }
     }
   }
-  const fromSdk = pick(state._pageParams);
+  const fromSdk = pick(state._pageParamValue);
   if (fromSdk) return fromSdk;
 
   // 3) document.referrer fallback
