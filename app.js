@@ -978,8 +978,18 @@ async function getCurrentUserEmail() {
 // yellow debug panel so we can eyeball whether the Deluge function is
 // returning the shape we expect (opening_stock, item_master, movements).
 function renderStockApiDebug(filters) {
+  // Debug panel is intentionally hidden in production — the state is still
+  // filled in below so it's available via devtools (state._stockApiDebug),
+  // just not shown to end users. Flip DEBUG_PANEL_VISIBLE = true to bring
+  // it back for troubleshooting.
+  const DEBUG_PANEL_VISIBLE = false;
   const dbg = document.querySelector("#userProfileDebug");
   if (!dbg) return;
+  if (!DEBUG_PANEL_VISIBLE) {
+    dbg.hidden = true;
+    dbg.textContent = "";
+    return;
+  }
   dbg.hidden = false;
   const payload = {
     __stockRegisterDateApi: state._stockApiDebug || null,
@@ -1293,28 +1303,26 @@ async function loadMasters() {
       }
     }
 
-    // Diagnostic panel
+    // Diagnostic panel — kept hidden in production but the data is still
+    // stashed on `state._userMastersDebug` so devtools can inspect it.
+    state._userMastersDebug = {
+      loginUser: currentUser,
+      apiCallDebug: state._apiCallDebug,
+      apiContext,
+      emailFieldMatched: state._debugEmailField || null,
+      resolvedProfile: userRecord?.profile ?? null,
+      resolvedBranch: userRecord?.branch ?? null,
+      isFullAccess,
+      branchMatchMode,
+      matchedByBranchCount: matchedByBranch.length,
+      matchedByBranchLabels: matchedByBranch.map((w) => w.label),
+      warehouseCount: warehouses.length,
+      rawEmployeeRecord: state._debugRawEmployee,
+    };
     const dbg = document.querySelector("#userProfileDebug");
     if (dbg) {
-      dbg.hidden = false;
-      dbg.textContent = JSON.stringify(
-        {
-          loginUser: currentUser,
-          apiCallDebug: state._apiCallDebug,
-          apiContext,
-          emailFieldMatched: state._debugEmailField || null,
-          resolvedProfile: userRecord?.profile ?? null,
-          resolvedBranch: userRecord?.branch ?? null,
-          isFullAccess,
-          branchMatchMode,
-          matchedByBranchCount: matchedByBranch.length,
-          matchedByBranchLabels: matchedByBranch.map((w) => w.label),
-          warehouseCount: warehouses.length,
-          rawEmployeeRecord: state._debugRawEmployee,
-        },
-        null,
-        2,
-      );
+      dbg.hidden = true;
+      dbg.textContent = "";
     }
     state.warehouses = visibleWarehouses;
     state.warehouseCount = visibleWarehouses.length;
