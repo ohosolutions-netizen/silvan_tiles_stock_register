@@ -989,37 +989,59 @@ async function getCurrentUserEmail() {
 // even for profiles that don't have read access on All_Employees /
 // Warehouse_Report. Returns the parsed { user, warehouses } payload or null.
 async function fetchUserContextViaApi(email) {
-  if (!email || !state.creatorReady || !window.ZOHO?.CREATOR?.API) return null;
+  const dbg = { called: false, sdkAvailable: false, attempts: [] };
+  state._apiCallDebug = dbg;
+  if (!email || !state.creatorReady || !window.ZOHO?.CREATOR?.API) {
+    dbg.sdkAvailable = Boolean(window.ZOHO?.CREATOR?.API);
+    return null;
+  }
+  dbg.called = true;
+  dbg.sdkAvailable = true;
+  dbg.apiKeys = Object.keys(ZOHO.CREATOR.API);
+
   const config = {
     workspacename: "hidesigntiles",
     appname: "silvan-tiles",
     functionname: "Fetch_User_Info",
     http_method: "GET",
-    // GET params — cover both keys, SDK versions differ on which one they read
     data: { emailparam: email },
     parameters: { emailparam: email },
   };
   const methods = [
-    () => ZOHO.CREATOR.API.invokeCustomAPI?.(config),
-    () => ZOHO.CREATOR.API.invokeCustomApi?.(config),
+    { name: "invokeCustomAPI", fn: () => ZOHO.CREATOR.API.invokeCustomAPI?.(config) },
+    { name: "invokeCustomApi", fn: () => ZOHO.CREATOR.API.invokeCustomApi?.(config) },
   ];
-  for (const invoke of methods) {
+  for (const { name, fn } of methods) {
+    const attempt = { method: name };
     try {
-      const raw = invoke();
-      if (raw === undefined) continue;
+      const raw = fn();
+      if (raw === undefined) {
+        attempt.result = "method not present";
+        dbg.attempts.push(attempt);
+        continue;
+      }
       const resp = raw && typeof raw.then === "function" ? await raw : raw;
-      if (!resp) continue;
-      // Success shape: { code: 3000, result: {...} }
-      if (resp.code !== undefined && String(resp.code) !== "3000") continue;
+      attempt.rawResponse = resp;
+      if (!resp) {
+        attempt.result = "empty response";
+        dbg.attempts.push(attempt);
+        continue;
+      }
       let body = resp.result ?? resp.data ?? resp;
       if (typeof body === "string") {
-        try { body = JSON.parse(body); } catch (e) { /* leave as string */ }
+        try { body = JSON.parse(body); } catch (e) { attempt.parseError = String(e); }
       }
+      attempt.parsedBody = body;
       if (body && typeof body === "object" && (body.user || body.warehouses)) {
+        attempt.result = "OK";
+        dbg.attempts.push(attempt);
         return body;
       }
+      attempt.result = "body missing user/warehouses";
+      dbg.attempts.push(attempt);
     } catch (e) {
-      // Try next method
+      attempt.error = String(e?.message || e);
+      dbg.attempts.push(attempt);
     }
   }
   return null;
@@ -1200,6 +1222,8 @@ async function loadMasters() {
       dbg.textContent = JSON.stringify(
         {
           loginUser: currentUser,
+          apiCallDebug: state._apiCallDebug,
+          apiContext,
           emailFieldMatched: state._debugEmailField || null,
           resolvedProfile: userRecord?.profile ?? null,
           resolvedBranch: userRecord?.branch ?? null,
@@ -1207,7 +1231,7 @@ async function loadMasters() {
           branchMatchMode,
           matchedByBranchCount: matchedByBranch.length,
           matchedByBranchLabels: matchedByBranch.map((w) => w.label),
-          allWarehouseIds: warehouses.map((w) => ({ id: w.id, label: w.label })),
+          warehouseCount: warehouses.length,
           rawEmployeeRecord: state._debugRawEmployee,
         },
         null,
