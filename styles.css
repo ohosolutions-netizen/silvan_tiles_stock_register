@@ -448,9 +448,13 @@ th {
   z-index: 2;
 }
 
+/* Date column widened so dd/mm/yy never wraps. Balancing pull comes off
+ * the movement columns (n+4) which now share the leftover space. */
 th:first-child,
 td:first-child {
-  width: 5%;
+  width: 9%;
+  min-width: 78px;
+  white-space: nowrap;
 }
 
 th:nth-child(2),
@@ -465,7 +469,7 @@ td:nth-child(3) {
 
 th:nth-child(n + 4),
 td:nth-child(n + 4) {
-  width: 6.5%;
+  width: 6%;
 }
 
 th:last-child,
