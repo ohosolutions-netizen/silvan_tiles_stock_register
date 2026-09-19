@@ -982,7 +982,7 @@ function renderStockApiDebug(filters) {
   // filled in below so it's available via devtools (state._stockApiDebug),
   // just not shown to end users. Flip DEBUG_PANEL_VISIBLE = true to bring
   // it back for troubleshooting.
-  const DEBUG_PANEL_VISIBLE = false;
+  const DEBUG_PANEL_VISIBLE = true;
   const dbg = document.querySelector("#userProfileDebug");
   if (!dbg) return;
   if (!DEBUG_PANEL_VISIBLE) {
