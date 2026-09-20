@@ -1341,15 +1341,29 @@ async function loadMasters() {
 
     // If page URL carries ?item_code=<code>, auto-select that item and lock
     // the search box. User only has to touch the warehouse (or accept the
-    // auto-selected one), and results load automatically.
+    // auto-selected one), and results load automatically. For non-admins
+    // whose profile can't read the Item_Master report, state.items may be
+    // empty — in that case we synthesize a stub option using just the code
+    // (label upgraded later once Stock_Register_Date's response arrives
+    // and gives us the real item name).
     const urlItemCode2 = await getPageParam("item_code");
     if (urlItemCode2) {
       const wanted = cleanKey(urlItemCode2);
-      const item = state.items.find((it) => cleanKey(it.code) === wanted);
-      if (item) {
-        state.urlItemLocked = true;
-        chooseItem(item);
+      let item = state.items.find((it) => cleanKey(it.code) === wanted);
+      if (!item) {
+        const codeStr = String(urlItemCode2).trim();
+        item = {
+          value: `urlcode-${wanted}`,
+          label: codeStr,
+          code: codeStr,
+          name: codeStr,
+          id: "",
+        };
+        state.items.push(item);
+        state.itemCount = state.items.length;
       }
+      state.urlItemLocked = true;
+      chooseItem(item);
     }
 
     setMasterDependentControls(true);
@@ -1868,6 +1882,22 @@ async function loadStockRegister(filters) {
   if (!apiBody) {
     state._itemMasterDebug = "Stock_Register_Date API returned no body — see debug panel.";
     return { openingStock: 0, rows: [], counts: {}, matchedCounts: {}, boxSize: 0 };
+  }
+
+  // If the API returned an item block, upgrade the stub we synthesized
+  // for the URL-driven flow with the real name/id so the search box no
+  // longer shows just the raw code.
+  if (apiBody.item && apiBody.item.name && state.selectedItem) {
+    const it = state.selectedItem;
+    const wasStub = !it.name || it.name === it.code;
+    if (wasStub) {
+      it.name = apiBody.item.name;
+      it.label = apiBody.item.name;
+      it.id = apiBody.item.id || it.id;
+      if (els.itemSearch && !els.itemSearch.matches(":focus")) {
+        els.itemSearch.value = apiBody.item.name;
+      }
+    }
   }
 
   const openingStock = Number(apiBody.opening_stock || 0);
